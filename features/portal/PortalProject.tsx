@@ -26,10 +26,12 @@ export function PortalProject({
   bundle,
   items,
   raid = [],
+  children,
 }: {
   bundle: ProjectBundle;
   items: WorkItem[];
   raid?: RaidView[];
+  children?: React.ReactNode;
 }) {
   const path = usePathname();
   const visible = items.filter((i) => i.type !== 'epic');
@@ -40,6 +42,7 @@ export function PortalProject({
         <Paper sx={{ p: 3, borderRadius: 4 }}>
           <GateTracker phases={bundle.phases} />
         </Paper>
+        {children}
         <Paper sx={{ borderRadius: 4 }}>
           <Typography variant="h3" sx={{ p: 2 }}>
             Shared work

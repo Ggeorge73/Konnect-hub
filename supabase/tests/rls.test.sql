@@ -446,6 +446,12 @@ begin
                                  values (%L, %L, 'approved', %L)$q$, tests.ehr(), md5('p_ehr_ph3')::uuid, tests.uid('cmember')),
                        'client member records gate decision');
   perform tests.as_user('sponsor');
+  perform tests.throws(format($q$insert into public.gate_reviews (project_id, phase_id, decision, conditions, decided_by)
+                                 values (%L, %L, 'approved_with_conditions', 'x', %L)$q$, tests.ehr(), md5('p_ehr_ph3')::uuid,
+                              tests.uid('sponsor')), 'sponsor decision without fresh re-auth');
+  perform tests.as_owner();
+  insert into public.reauth_events (user_id) values (tests.uid('sponsor'));
+  perform tests.as_user('sponsor');
   insert into public.gate_reviews (project_id, phase_id, decision, conditions, decided_by, ip)
   values (tests.ehr(), md5('p_ehr_ph3')::uuid, 'approved_with_conditions', 'Fix EHR-16 first', tests.uid('sponsor'), '203.0.113.10');
   perform tests.throws(format($q$insert into public.gate_reviews (project_id, phase_id, decision, decided_by)
@@ -643,6 +649,118 @@ begin
                        'internal user calls the client request RPC');
   perform tests.ok(not has_function_privilege('anon', 'public.create_client_request(uuid, text, text, public.priority)', 'execute'),
                    'anon cannot execute create_client_request');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 12. Gate review flow and deliverable acceptance (0005_gates_deliverables.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_review public.gate_reviews;
+  v_del public.deliverables;
+  v_ph3 uuid := md5('p_ehr_ph3')::uuid;
+  v_ph4 uuid := md5('p_ehr_ph4')::uuid;
+  v_dl uuid := md5('dl_ehr_1')::uuid;
+  v_c1 uuid;
+  v_c2 uuid;
+begin
+  -- Only the Lead requests review; open criteria block it unless overridden.
+  perform tests.as_user('dev');
+  perform tests.throws(format('select public.request_gate_review(%L, %L)', v_ph3, 'note'), 'team member requests review');
+  perform tests.as_user('lead');
+  perform tests.throws(format('select public.request_gate_review(%L)', v_ph3), 'review with open criteria, no override');
+  perform tests.throws(format('select public.request_gate_review(%L, %L)', v_ph4, 'note'), 'review of a not-started phase');
+  update public.gate_criteria set done = true where phase_id = v_ph3;
+  v_review := public.request_gate_review(v_ph3, null, null, false);
+  perform tests.ok(v_review.status = 'pending' and v_review.requested_by = tests.uid('lead'), 'review is pending');
+  perform tests.ok((select status = 'ready_for_review' from public.phases where id = v_ph3), 'phase ready for review');
+  perform tests.throws(format('select public.request_gate_review(%L)', v_ph3), 'second pending review');
+  perform tests.eq(tests.count('gate_review_budgets', format('review_id = %L', v_review.id)), 1, 'lead sees gate budget');
+
+  -- Visibility: own-org sponsor sees the review but not the unshared budget; other orgs see nothing.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('gate_reviews', format('id = %L', v_review.id)), 1, 'sponsor sees pending review');
+  perform tests.eq(tests.count('gate_review_budgets', format('review_id = %L', v_review.id)), 0,
+                   'sponsor cannot see unshared budget');
+  perform tests.as_user('assoc');
+  perform tests.eq(tests.count('gate_review_budgets', format('review_id = %L', v_review.id)), 0, 'associate sees budget');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('gate_reviews', format('id = %L', v_review.id)), 0, 'other client sees review');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'other org sponsor decides');
+
+  -- Only the sponsor decides, and only with a fresh re-auth the client cannot forge.
+  perform tests.as_owner();
+  insert into public.reauth_events (user_id) values (tests.uid('cmember'));
+  perform tests.as_user('cmember');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'client member decides gate');
+  perform tests.as_user('lead');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'lead decides gate');
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'decision without re-auth');
+  perform tests.throws(format('insert into public.reauth_events (user_id) values (%L)', tests.uid('sponsor')),
+                       'client forges a re-auth event');
+  perform tests.as_owner();
+  insert into public.reauth_events (user_id, at) values (tests.uid('sponsor'), now() - interval '16 minutes');
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'stale re-auth');
+  perform tests.as_owner();
+  insert into public.reauth_events (user_id) values (tests.uid('sponsor'));
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved_with_conditions'')', v_review.id),
+                       'conditional approval without conditions');
+  perform tests.throws(format('select public.decide_gate(%L, ''rejected'')', v_review.id), 'rejection without reason');
+  v_review := public.decide_gate(v_review.id, 'approved_with_conditions', array['Fix duplicate MRNs', ' '], null,
+                                 '203.0.113.9');
+  perform tests.ok(v_review.decided_by = tests.uid('sponsor') and host(v_review.ip) = '203.0.113.9'
+                   and v_review.decided_at is not null, 'decision is name-, time- and IP-stamped');
+  perform tests.eq(cardinality(v_review.condition_item_keys), 1, 'one condition item');
+  perform tests.ok((select status = 'approved_with_conditions' from public.phases where id = v_ph3), 'phase approved');
+  perform tests.ok((select status = 'active' from public.phases where id = v_ph4), 'next phase active');
+  perform tests.eq(tests.count('work_items', format($q$key = %L and type = 'task' and visibility = 'shared'
+                                                       and 'gate-condition' = any(labels)$q$,
+                                                    v_review.condition_item_keys[1])), 1,
+                   'condition is a shared tracked task the sponsor sees');
+  update public.gate_reviews set decision = 'rejected' where id = v_review.id;
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'decide twice');
+  perform tests.as_owner();
+  perform tests.ok((select decision = 'approved_with_conditions' from public.gate_reviews where id = v_review.id),
+                   'decisions cannot be rewritten');
+  perform tests.eq((select count(*) from public.audit_log where action = 'gate.decide'
+                    and entity_id = v_review.id::text and host(ip) = '203.0.113.9'), 1, 'decision audited with IP');
+
+  -- Deliverables: client reviewers accept/reject each criterion; a rejection reopens linked items.
+  insert into public.deliverable_criteria (project_id, deliverable_id, text, position)
+  values (tests.ehr(), v_dl, 'Appointment types mapped', 1) returning id into v_c1;
+  insert into public.deliverable_criteria (project_id, deliverable_id, text, position)
+  values (tests.ehr(), v_dl, 'Variance under 0.5%', 2) returning id into v_c2;
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('deliverable_criteria', format('deliverable_id = %L', v_dl)), 0,
+                   'other client sees deliverable criteria');
+  perform tests.throws(format('select public.decide_deliverable_criterion(%L, ''accepted'')', v_c1),
+                       'other org accepts');
+  perform tests.as_user('cviewer');
+  perform tests.throws(format('select public.decide_deliverable_criterion(%L, ''accepted'')', v_c1), 'viewer accepts');
+  perform tests.as_user('sponsor');
+  update public.deliverable_criteria set status = 'accepted' where id = v_c1;
+  perform tests.ok((select status = 'pending' from public.deliverable_criteria where id = v_c1),
+                   'client cannot update criteria directly');
+  perform tests.as_user('cmember');
+  v_del := public.decide_deliverable_criterion(v_c1, 'accepted', null, '198.51.100.1');
+  perform tests.ok(v_del.status = 'submitted', 'one of two accepted stays awaiting acceptance');
+  perform tests.as_user('sponsor');
+  v_del := public.decide_deliverable_criterion(v_c2, 'rejected', 'Telehealth types missing', '203.0.113.9');
+  perform tests.ok(v_del.status = 'rejected', 'any rejection rejects the deliverable');
+  perform tests.throws(format('select public.decide_deliverable_criterion(%L, ''accepted'')', v_c2),
+                       'decide a rejected deliverable');
+  perform tests.as_owner();
+  perform tests.eq((select count(*) from public.work_items where id in (tests.item('EHR-6'), tests.item('EHR-7'),
+                      tests.item('EHR-18')) and status = 'in_progress'), 3, 'linked items reopened to In Progress');
+  perform tests.eq((select count(*) from public.audit_log where action = 'deliverable.criterion_decide'
+                    and entity_id = v_dl::text), 2, 'acceptance decisions audited');
+  perform tests.ok((select decided_by = tests.uid('sponsor') and host(ip) = '203.0.113.9'
+                    from public.deliverable_criteria where id = v_c2), 'criterion decision stamped');
 end $$;
 rollback;
 
