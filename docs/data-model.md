@@ -38,6 +38,7 @@ Restricted projects are hidden from internal users who are not US persons, even 
 - **Accepted status.** Use `transition_work_item(item_id, to_status, offline_note default null)`. Client sponsors and members can accept. A lead or admin can accept only with a non-empty offline note, which is written to `audit_log` as `item.offline_acceptance`. Client viewers can never move items. A trigger rejects any direct `INSERT` or `UPDATE` that sets `accepted`.
 - **Item keys.** Insert work items without `number` or `key`. A trigger takes the next `projects.next_item_number` atomically and sets `key`. Both are immutable afterwards.
 - **New projects.** Use `create_project_from_template(key, name, client_org_id, lead_id, template_id, methodology, contract_type, bac, ...)`. It creates the project, its financials, the lead's membership, 5 phases and the template's gate criteria.
+- **Client requests.** Clients can't insert `work_items` directly. Client sponsors and members call `create_client_request(project_id, title, description, priority)` (`0004_client_request_rpc.sql`), which always creates a shared `client_request` in the backlog.
 - **RAID.** A risk can't be closed without a `closure_note`.
 - **Audit log.** `audit_log` rejects `UPDATE`, `DELETE` and `TRUNCATE`, even from the table owner.
 - **Profiles.** Users can edit their own profile but cannot change their role, org, email, US-person flag or MFA flag.

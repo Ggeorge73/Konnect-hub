@@ -16,6 +16,12 @@ import type {
   AuditEntry,
 } from '../domain/types';
 import { getTemplate } from '../domain/templates';
+import { seedRaid } from './seed-raid';
+import type { PlanningState } from '../domain/sprints';
+import { datedEhrPhases, seedPlanning, SEED_TIMELINE_LINKS } from './seed-sprints';
+import type { GateReview } from '../domain/gates';
+import type { Deliverable } from '../domain/deliverables';
+import { seedGates } from './seed-gates';
 
 export interface Db {
   orgs: Organization[];
@@ -30,6 +36,11 @@ export interface Db {
   comments: Comment[];
   activity: ActivityEvent[];
   audit: AuditEntry[];
+  raid: ReturnType<typeof seedRaid>['raid'];
+  notifications: ReturnType<typeof seedRaid>['notifications'];
+  planning: PlanningState;
+  gateReviews: GateReview[];
+  deliverables: Deliverable[];
 }
 
 export const DEMO_PROJECT_KEY = 'EHR';
@@ -617,13 +628,16 @@ export function buildSeed(): Db {
     profiles: structuredClone(PROFILES),
     projects,
     members,
-    phases: [...ehr.phases, ...rvb.phases, ...psr.phases],
+    phases: [...datedEhrPhases(ehr.phases), ...rvb.phases, ...psr.phases],
     criteria: [...ehr.criteria, ...rvb.criteria, ...psr.criteria],
     sprints,
     items,
-    links,
+    links: [...links, ...SEED_TIMELINE_LINKS],
     comments,
     activity,
     audit: [],
+    ...seedRaid(),
+    planning: seedPlanning(),
+    ...seedGates(),
   };
 }

@@ -446,6 +446,12 @@ begin
                                  values (%L, %L, 'approved', %L)$q$, tests.ehr(), md5('p_ehr_ph3')::uuid, tests.uid('cmember')),
                        'client member records gate decision');
   perform tests.as_user('sponsor');
+  perform tests.throws(format($q$insert into public.gate_reviews (project_id, phase_id, decision, conditions, decided_by)
+                                 values (%L, %L, 'approved_with_conditions', 'x', %L)$q$, tests.ehr(), md5('p_ehr_ph3')::uuid,
+                              tests.uid('sponsor')), 'sponsor decision without fresh re-auth');
+  perform tests.as_owner();
+  insert into public.reauth_events (user_id) values (tests.uid('sponsor'));
+  perform tests.as_user('sponsor');
   insert into public.gate_reviews (project_id, phase_id, decision, conditions, decided_by, ip)
   values (tests.ehr(), md5('p_ehr_ph3')::uuid, 'approved_with_conditions', 'Fix EHR-16 first', tests.uid('sponsor'), '203.0.113.10');
   perform tests.throws(format($q$insert into public.gate_reviews (project_id, phase_id, decision, decided_by)
@@ -475,6 +481,286 @@ begin
   -- Notifications are personal.
   perform tests.as_user('dev');
   perform tests.eq(tests.count('notifications'), 1, 'dev sees only own notifications');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 9. RAID register (0003): decisions, issue SLA, residual score, escalation bookkeeping, links.
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_id uuid;
+  v_upd timestamptz;
+begin
+  -- Business-day math (2026-10-16 is a Friday).
+  perform tests.ok(public.add_business_days('2026-10-16 15:00+00', 1) = '2026-10-19 15:00+00', 'Fri + 1 bd = Mon');
+  perform tests.ok(public.add_business_days('2026-10-17 09:00+00', 10) = '2026-10-30 09:00+00', 'Sat + 10 bd = 2nd Fri');
+
+  perform tests.as_user('lead');
+  insert into public.raid_entries (project_id, kind, title, severity, created_at)
+  values (tests.ehr(), 'issue', 'Critical issue', 'critical', '2026-10-16 15:00+00') returning id into v_id;
+  perform tests.ok((select sla_due_at = '2026-10-18 15:00+00' from public.raid_entries where id = v_id), 'critical SLA is 48h');
+  update public.raid_entries set severity = 'major' where id = v_id;
+  perform tests.ok((select sla_due_at = '2026-10-23 15:00+00' from public.raid_entries where id = v_id), 'major SLA is 5 business days');
+
+  -- Escalation bookkeeping does not count as an update (staleness is preserved).
+  select updated_at into v_upd from public.raid_entries where id = v_id;
+  update public.raid_entries set escalated_at = now() where id = v_id;
+  perform tests.ok((select updated_at = v_upd from public.raid_entries where id = v_id), 'escalated_at keeps updated_at');
+  update public.raid_entries set description = 'Vendor replied' where id = v_id;
+  perform tests.ok((select updated_at > v_upd from public.raid_entries where id = v_id), 'real edit bumps updated_at');
+
+  -- Decisions and residual score.
+  insert into public.raid_entries (project_id, kind, title, decided_by, rationale, entry_date, status)
+  values (tests.ehr(), 'decision', 'Two-wave go-live', tests.uid('lead'), 'Halves support load', '2026-10-01', 'closed')
+  returning id into v_id;
+  perform tests.ok(v_id is not null, 'decision entry inserted');
+  insert into public.raid_entries (project_id, kind, title, probability, impact, residual_probability, residual_impact)
+  values (tests.ehr(), 'risk', 'Residual', 4, 4, 2, 3) returning id into v_id;
+  perform tests.ok((select escalate and score = 16 and residual_score = 6 from public.raid_entries where id = v_id),
+                   'residual score generated');
+
+  -- Links: both ends must be visible; clients read only; no cross-project links.
+  perform tests.eq(tests.count('raid_links', format('project_id = %L', tests.ehr())), 2, 'lead sees both EHR links');
+  insert into public.raid_links (project_id, raid_id, item_id) values (tests.ehr(), v_id, tests.item('EHR-16'));
+  perform tests.throws(format('insert into public.raid_links (project_id, raid_id, item_id) values (%L, %L, %L)',
+                              tests.ehr(), v_id, tests.item('RVB-2')), 'cross-project RAID link');
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('raid_links', format('project_id = %L', tests.ehr())), 1,
+                   'sponsor sees only the link between shared entry and shared item');
+  perform tests.throws(format('insert into public.raid_links (project_id, raid_id, item_id) values (%L, %L, %L)',
+                              tests.ehr(), md5('rd_ehr_1')::uuid, tests.item('EHR-9')), 'client links RAID entry');
+  update public.raid_entries set title = 'Edited by client' where id = md5('rd_ehr_1')::uuid;
+  perform tests.eq(tests.count('raid_entries', 'title = ''Edited by client'''), 0, 'client edit of RAID entry is a no-op');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('raid_links'), 1, 'rsponsor sees the shared RVB link only');
+  perform tests.as_user('assoc');
+  perform tests.eq(tests.count('raid_links', format('project_id = %L', tests.rvb())), 0, 'associate sees no RVB links');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 10. Sprints and timeline (0002_sprints_timeline): Lead/Admin plan sprints, one active sprint
+--    per project, end after start, hours-per-point, epic planned dates.
+-- ===========================================================================
+begin;
+do $$
+declare
+  n int;
+begin
+  -- Everyone on the project reads sprints; clients and team members cannot change them.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('sprints', format('project_id = %L', tests.ehr())), 3, 'sponsor reads EHR sprints');
+  update public.sprints set name = 'hacked' where id = md5('s_ehr3')::uuid;
+  get diagnostics n = row_count;
+  perform tests.eq(n, 0, 'sponsor renamed a sprint');
+
+  perform tests.as_user('dev');
+  perform tests.eq(tests.count('sprints', format('project_id = %L', tests.ehr())), 3, 'dev reads EHR sprints');
+  update public.sprints set status = 'completed' where id = md5('s_ehr2')::uuid;
+  get diagnostics n = row_count;
+  perform tests.eq(n, 0, 'team member completed a sprint');
+  perform tests.throws(format($q$insert into public.sprints (project_id, phase_id, name, start_date, end_date)
+                                 values (%L, %L, 'Dev sprint', '2026-11-02', '2026-11-13')$q$,
+                              tests.ehr(), md5('p_ehr_ph3')::uuid),
+                       'team member creates a sprint');
+  -- ...but can still move items into a sprint.
+  update public.work_items set sprint_id = md5('s_ehr3')::uuid where id = tests.item('EHR-11');
+  get diagnostics n = row_count;
+  perform tests.eq(n, 1, 'team member moves an item into a sprint');
+
+  -- Lead plans sprints; end must be after start.
+  perform tests.as_user('lead');
+  insert into public.sprints (project_id, phase_id, name, start_date, end_date, capacity_hours)
+  values (tests.ehr(), md5('p_ehr_ph3')::uuid, 'EHR Sprint 4', '2026-11-02', '2026-11-13', 200);
+  perform tests.eq(tests.count('sprints', 'name = ''EHR Sprint 4'''), 1, 'lead creates a sprint');
+  perform tests.throws(format($q$insert into public.sprints (project_id, phase_id, name, start_date, end_date)
+                                 values (%L, %L, 'Zero-length', '2026-11-02', '2026-11-02')$q$,
+                              tests.ehr(), md5('p_ehr_ph3')::uuid),
+                       'sprint ending on its start date');
+  perform tests.throws(format($q$insert into public.sprints (project_id, phase_id, name, start_date, end_date, capacity_hours)
+                                 values (%L, %L, 'Negative', '2026-11-02', '2026-11-13', -1)$q$,
+                              tests.ehr(), md5('p_ehr_ph3')::uuid),
+                       'negative sprint capacity');
+
+  -- One active sprint per project: Sprint 3 cannot start while Sprint 2 is active.
+  perform tests.throws(format('update public.sprints set status = ''active'' where id = %L', md5('s_ehr3')::uuid),
+                       'second active sprint in EHR');
+  update public.sprints set status = 'completed' where id = md5('s_ehr2')::uuid;
+  update public.sprints set status = 'active' where id = md5('s_ehr3')::uuid;
+  get diagnostics n = row_count;
+  perform tests.eq(n, 1, 'lead starts Sprint 3 after completing Sprint 2');
+  perform tests.eq(tests.count('sprints', format('project_id = %L and status = ''active''', tests.ehr())), 1,
+                   'exactly one active EHR sprint');
+
+  -- The Lead of EHR is not the Lead of PSR (Admin leads it): no sprint writes there.
+  perform tests.throws(format($q$insert into public.sprints (project_id, name, start_date, end_date)
+                                 values (%L, 'PSR sprint', '2026-11-02', '2026-11-13')$q$, tests.psr()),
+                       'lead creates a sprint on a project they do not lead');
+
+  -- Hours per point: defaults to 6, managers may change it, within range.
+  perform tests.ok((select hours_per_point = 6 from public.projects where id = tests.ehr()), 'default 6 h per point');
+  update public.projects set hours_per_point = 8 where id = tests.ehr();
+  perform tests.ok((select hours_per_point = 8 from public.projects where id = tests.ehr()), 'lead sets hours per point');
+  perform tests.throws(format('update public.projects set hours_per_point = 0 where id = %L', tests.ehr()),
+                       'zero hours per point');
+
+  -- Epic planned dates (timeline drag): both or neither, end not before start.
+  update public.work_items set planned_start = '2026-09-21', planned_end = '2026-11-13' where id = tests.item('EHR-1');
+  get diagnostics n = row_count;
+  perform tests.eq(n, 1, 'lead schedules an epic');
+  perform tests.throws(format($q$update public.work_items set planned_start = '2026-11-13', planned_end = '2026-09-21'
+                                 where id = %L$q$, tests.item('EHR-2')), 'epic planned end before start');
+  perform tests.throws(format($q$update public.work_items set planned_start = '2026-11-13' where id = %L$q$,
+                              tests.item('EHR-2')), 'epic planned start without end');
+
+  perform tests.as_user('dev');
+  update public.projects set hours_per_point = 2 where id = tests.ehr();
+  get diagnostics n = row_count;
+  perform tests.eq(n, 0, 'team member changes hours per point');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 11. Client requests go through create_client_request() (0004_client_request_rpc.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v public.work_items;
+begin
+  perform tests.as_user('cmember');
+  v := public.create_client_request(tests.ehr(), 'Please add a referral field');
+  perform tests.ok(v.type = 'client_request' and v.visibility = 'shared' and v.status = 'backlog',
+                   'client request is a shared backlog client_request');
+  perform tests.ok(v.key = 'EHR-' || v.number and v.reporter_id = tests.uid('cmember'), 'client request key + reporter');
+  perform tests.eq(tests.count('work_items', format('id = %L', v.id)), 1, 'client sees own request');
+  perform tests.eq(tests.count('activity', format('item_id = %L', v.id)), 1, 'client sees request activity');
+  perform tests.throws(format('select public.create_client_request(%L, %L)', tests.rvb(), 'x'),
+                       'Peachtree member raises a request on Riverbend');
+  perform tests.throws(format('select public.create_client_request(%L, %L)', tests.ehr(), '  '),
+                       'blank client request title');
+  perform tests.as_user('cviewer');
+  perform tests.throws(format('select public.create_client_request(%L, %L)', tests.ehr(), 'x'),
+                       'viewer raises a request');
+  perform tests.as_user('dev');
+  perform tests.throws(format('select public.create_client_request(%L, %L)', tests.ehr(), 'x'),
+                       'internal user calls the client request RPC');
+  perform tests.ok(not has_function_privilege('anon', 'public.create_client_request(uuid, text, text, public.priority)', 'execute'),
+                   'anon cannot execute create_client_request');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 12. Gate review flow and deliverable acceptance (0005_gates_deliverables.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_review public.gate_reviews;
+  v_del public.deliverables;
+  v_ph3 uuid := md5('p_ehr_ph3')::uuid;
+  v_ph4 uuid := md5('p_ehr_ph4')::uuid;
+  v_dl uuid := md5('dl_ehr_1')::uuid;
+  v_c1 uuid;
+  v_c2 uuid;
+begin
+  -- Only the Lead requests review; open criteria block it unless overridden.
+  perform tests.as_user('dev');
+  perform tests.throws(format('select public.request_gate_review(%L, %L)', v_ph3, 'note'), 'team member requests review');
+  perform tests.as_user('lead');
+  perform tests.throws(format('select public.request_gate_review(%L)', v_ph3), 'review with open criteria, no override');
+  perform tests.throws(format('select public.request_gate_review(%L, %L)', v_ph4, 'note'), 'review of a not-started phase');
+  update public.gate_criteria set done = true where phase_id = v_ph3;
+  v_review := public.request_gate_review(v_ph3, null, null, false);
+  perform tests.ok(v_review.status = 'pending' and v_review.requested_by = tests.uid('lead'), 'review is pending');
+  perform tests.ok((select status = 'ready_for_review' from public.phases where id = v_ph3), 'phase ready for review');
+  perform tests.throws(format('select public.request_gate_review(%L)', v_ph3), 'second pending review');
+  perform tests.eq(tests.count('gate_review_budgets', format('review_id = %L', v_review.id)), 1, 'lead sees gate budget');
+
+  -- Visibility: own-org sponsor sees the review but not the unshared budget; other orgs see nothing.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('gate_reviews', format('id = %L', v_review.id)), 1, 'sponsor sees pending review');
+  perform tests.eq(tests.count('gate_review_budgets', format('review_id = %L', v_review.id)), 0,
+                   'sponsor cannot see unshared budget');
+  perform tests.as_user('assoc');
+  perform tests.eq(tests.count('gate_review_budgets', format('review_id = %L', v_review.id)), 0, 'associate sees budget');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('gate_reviews', format('id = %L', v_review.id)), 0, 'other client sees review');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'other org sponsor decides');
+
+  -- Only the sponsor decides, and only with a fresh re-auth the client cannot forge.
+  perform tests.as_owner();
+  insert into public.reauth_events (user_id) values (tests.uid('cmember'));
+  perform tests.as_user('cmember');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'client member decides gate');
+  perform tests.as_user('lead');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'lead decides gate');
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'decision without re-auth');
+  perform tests.throws(format('insert into public.reauth_events (user_id) values (%L)', tests.uid('sponsor')),
+                       'client forges a re-auth event');
+  perform tests.as_owner();
+  insert into public.reauth_events (user_id, at) values (tests.uid('sponsor'), now() - interval '16 minutes');
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'stale re-auth');
+  perform tests.as_owner();
+  insert into public.reauth_events (user_id) values (tests.uid('sponsor'));
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.decide_gate(%L, ''approved_with_conditions'')', v_review.id),
+                       'conditional approval without conditions');
+  perform tests.throws(format('select public.decide_gate(%L, ''rejected'')', v_review.id), 'rejection without reason');
+  v_review := public.decide_gate(v_review.id, 'approved_with_conditions', array['Fix duplicate MRNs', ' '], null,
+                                 '203.0.113.9');
+  perform tests.ok(v_review.decided_by = tests.uid('sponsor') and host(v_review.ip) = '203.0.113.9'
+                   and v_review.decided_at is not null, 'decision is name-, time- and IP-stamped');
+  perform tests.eq(cardinality(v_review.condition_item_keys), 1, 'one condition item');
+  perform tests.ok((select status = 'approved_with_conditions' from public.phases where id = v_ph3), 'phase approved');
+  perform tests.ok((select status = 'active' from public.phases where id = v_ph4), 'next phase active');
+  perform tests.eq(tests.count('work_items', format($q$key = %L and type = 'task' and visibility = 'shared'
+                                                       and 'gate-condition' = any(labels)$q$,
+                                                    v_review.condition_item_keys[1])), 1,
+                   'condition is a shared tracked task the sponsor sees');
+  update public.gate_reviews set decision = 'rejected' where id = v_review.id;
+  perform tests.throws(format('select public.decide_gate(%L, ''approved'')', v_review.id), 'decide twice');
+  perform tests.as_owner();
+  perform tests.ok((select decision = 'approved_with_conditions' from public.gate_reviews where id = v_review.id),
+                   'decisions cannot be rewritten');
+  perform tests.eq((select count(*) from public.audit_log where action = 'gate.decide'
+                    and entity_id = v_review.id::text and host(ip) = '203.0.113.9'), 1, 'decision audited with IP');
+
+  -- Deliverables: client reviewers accept/reject each criterion; a rejection reopens linked items.
+  insert into public.deliverable_criteria (project_id, deliverable_id, text, position)
+  values (tests.ehr(), v_dl, 'Appointment types mapped', 1) returning id into v_c1;
+  insert into public.deliverable_criteria (project_id, deliverable_id, text, position)
+  values (tests.ehr(), v_dl, 'Variance under 0.5%', 2) returning id into v_c2;
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('deliverable_criteria', format('deliverable_id = %L', v_dl)), 0,
+                   'other client sees deliverable criteria');
+  perform tests.throws(format('select public.decide_deliverable_criterion(%L, ''accepted'')', v_c1),
+                       'other org accepts');
+  perform tests.as_user('cviewer');
+  perform tests.throws(format('select public.decide_deliverable_criterion(%L, ''accepted'')', v_c1), 'viewer accepts');
+  perform tests.as_user('sponsor');
+  update public.deliverable_criteria set status = 'accepted' where id = v_c1;
+  perform tests.ok((select status = 'pending' from public.deliverable_criteria where id = v_c1),
+                   'client cannot update criteria directly');
+  perform tests.as_user('cmember');
+  v_del := public.decide_deliverable_criterion(v_c1, 'accepted', null, '198.51.100.1');
+  perform tests.ok(v_del.status = 'submitted', 'one of two accepted stays awaiting acceptance');
+  perform tests.as_user('sponsor');
+  v_del := public.decide_deliverable_criterion(v_c2, 'rejected', 'Telehealth types missing', '203.0.113.9');
+  perform tests.ok(v_del.status = 'rejected', 'any rejection rejects the deliverable');
+  perform tests.throws(format('select public.decide_deliverable_criterion(%L, ''accepted'')', v_c2),
+                       'decide a rejected deliverable');
+  perform tests.as_owner();
+  perform tests.eq((select count(*) from public.work_items where id in (tests.item('EHR-6'), tests.item('EHR-7'),
+                      tests.item('EHR-18')) and status = 'in_progress'), 3, 'linked items reopened to In Progress');
+  perform tests.eq((select count(*) from public.audit_log where action = 'deliverable.criterion_decide'
+                    and entity_id = v_dl::text), 2, 'acceptance decisions audited');
+  perform tests.ok((select decided_by = tests.uid('sponsor') and host(ip) = '203.0.113.9'
+                    from public.deliverable_criteria where id = v_c2), 'criterion decision stamped');
 end $$;
 rollback;
 

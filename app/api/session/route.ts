@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { DEMO_USER_COOKIE, getSession } from '@/lib/session';
 import { db } from '@/lib/data/memory';
 import { isSupabaseConfigured } from '@/lib/config';
+import { SEED_PROFILE_UUID } from '@/lib/data/seed-ids';
 
 export async function GET() {
   const s = await getSession();
@@ -14,8 +15,10 @@ export async function GET() {
 export async function POST(req: Request) {
   if (isSupabaseConfigured()) return NextResponse.json({ error: 'Not available' }, { status: 404 });
   const { userId } = z.object({ userId: z.string() }).parse(await req.json());
-  if (!db().profiles.some((p) => p.id === userId))
-    return NextResponse.json({ error: 'Unknown user' }, { status: 400 });
+  // Demo personas by seed id, or by their fixed uuid when the demo runs on Postgres (KH_DATA=postgres).
+  const known =
+    db().profiles.some((p) => p.id === userId) || Object.values(SEED_PROFILE_UUID).includes(userId);
+  if (!known) return NextResponse.json({ error: 'Unknown user' }, { status: 400 });
   const res = NextResponse.json({ ok: true });
   res.cookies.set(DEMO_USER_COOKIE, userId, { path: '/', httpOnly: true, sameSite: 'lax' });
   return res;

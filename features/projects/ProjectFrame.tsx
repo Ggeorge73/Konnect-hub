@@ -20,9 +20,12 @@ export const useProjectBundle = () => {
 const TABS = [
   { label: 'Overview', seg: '' },
   { label: 'Board', seg: 'board' },
+  { label: 'Backlog', seg: 'backlog' },
   { label: 'List', seg: 'list' },
   { label: 'Timeline', seg: 'timeline' },
   { label: 'RAID', seg: 'raid' },
+  { label: 'Gates', seg: 'gates' },
+  { label: 'Deliverables', seg: 'deliverables' },
 ];
 
 export function ProjectFrame({ projectKey, children }: { projectKey: string; children: React.ReactNode }) {

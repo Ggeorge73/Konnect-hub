@@ -269,6 +269,12 @@ insert into public.raid_entries (id, project_id, kind, title, description, categ
    'Internal note on county security review queue.', 'Regulatory', 'b0000000-0000-4000-8000-000000000002', 2, 3,
    null, null, null, 'internal', 'open', 'b0000000-0000-4000-8000-000000000002');
 
+-- RAID links (0003_raid_register). The EHR-12 link points at an internal item, so clients never see it.
+insert into public.raid_links (project_id, raid_id, item_id) values
+  ('c0000000-0000-4000-8000-000000000001', md5('rd_ehr_1')::uuid, md5('wi_ehr_7')::uuid),
+  ('c0000000-0000-4000-8000-000000000001', md5('rd_ehr_1')::uuid, md5('wi_ehr_12')::uuid),
+  ('c0000000-0000-4000-8000-000000000002', md5('rd_rvb_1')::uuid, md5('wi_rvb_2')::uuid);
+
 -- Time, allocations, status reports -----------------------------------------------
 insert into public.time_entries (id, project_id, item_id, user_id, entry_date, hours, note) values
   (md5('te_1')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('wi_ehr_7')::uuid, 'b0000000-0000-4000-8000-000000000004', '2026-10-07', 6, 'Dry-run'),
@@ -311,5 +317,23 @@ insert into public.activity (id, project_id, item_id, actor_id, action, detail, 
 insert into public.audit_log (actor_id, project_id, action, entity, entity_id, after, at) values
   ('b0000000-0000-4000-8000-000000000002', 'c0000000-0000-4000-8000-000000000002', 'project.create', 'project',
    'c0000000-0000-4000-8000-000000000002', '{"key":"RVB"}', '2026-09-14T09:00:00Z');
+
+-- Gates and deliverables (0005_gates_deliverables.sql; mirrors lib/data/seed-gates.ts) -------
+update public.gate_reviews set requested_by = 'b0000000-0000-4000-8000-000000000002',
+  requested_at = decided_at - interval '2 days'
+  where id in (md5('gr_ehr_1')::uuid, md5('gr_ehr_2')::uuid, md5('gr_rvb_1')::uuid);
+insert into public.gate_review_budgets (review_id, project_id, bac, percent_complete) values
+  (md5('gr_ehr_1')::uuid, 'c0000000-0000-4000-8000-000000000001', 480000, 0),
+  (md5('gr_ehr_2')::uuid, 'c0000000-0000-4000-8000-000000000001', 480000, 0),
+  (md5('gr_rvb_1')::uuid, 'c0000000-0000-4000-8000-000000000002', 310000, 0);
+update public.deliverables set owner_id = 'b0000000-0000-4000-8000-000000000002',
+  created_by = 'b0000000-0000-4000-8000-000000000002';
+insert into public.deliverable_criteria (id, project_id, deliverable_id, text, position) values
+  (md5('dlc_ehr_1_1')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('dl_ehr_1')::uuid,
+   'All legacy appointment types map to a new visit type', 1),
+  (md5('dlc_ehr_1_2')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('dl_ehr_1')::uuid,
+   'Reconciliation report shows under 0.5% variance from source', 2),
+  (md5('dlc_rvb_1_1')::uuid, 'c0000000-0000-4000-8000-000000000002', md5('dl_rvb_1')::uuid,
+   'Applicants can complete intake end to end', 1);
 
 commit;
