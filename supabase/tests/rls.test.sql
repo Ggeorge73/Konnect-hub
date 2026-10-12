@@ -478,5 +478,35 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 9. Client requests go through create_client_request() (0002_client_request_rpc.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v public.work_items;
+begin
+  perform tests.as_user('cmember');
+  v := public.create_client_request(tests.ehr(), 'Please add a referral field');
+  perform tests.ok(v.type = 'client_request' and v.visibility = 'shared' and v.status = 'backlog',
+                   'client request is a shared backlog client_request');
+  perform tests.ok(v.key = 'EHR-' || v.number and v.reporter_id = tests.uid('cmember'), 'client request key + reporter');
+  perform tests.eq(tests.count('work_items', format('id = %L', v.id)), 1, 'client sees own request');
+  perform tests.eq(tests.count('activity', format('item_id = %L', v.id)), 1, 'client sees request activity');
+  perform tests.throws(format('select public.create_client_request(%L, %L)', tests.rvb(), 'x'),
+                       'Peachtree member raises a request on Riverbend');
+  perform tests.throws(format('select public.create_client_request(%L, %L)', tests.ehr(), '  '),
+                       'blank client request title');
+  perform tests.as_user('cviewer');
+  perform tests.throws(format('select public.create_client_request(%L, %L)', tests.ehr(), 'x'),
+                       'viewer raises a request');
+  perform tests.as_user('dev');
+  perform tests.throws(format('select public.create_client_request(%L, %L)', tests.ehr(), 'x'),
+                       'internal user calls the client request RPC');
+  perform tests.ok(not has_function_privilege('anon', 'public.create_client_request(uuid, text, text, public.priority)', 'execute'),
+                   'anon cannot execute create_client_request');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;

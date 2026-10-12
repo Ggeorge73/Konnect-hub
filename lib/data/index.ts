@@ -1,11 +1,17 @@
 import type { Repo } from './repo';
 import { memoryRepo } from './memory';
+import { postgresRepo } from './postgres';
+import { isSupabaseConfigured } from '../config';
 
 /**
- * Returns the active repository. The Supabase adapter (lib/data/supabase.ts) is selected
- * when Supabase env vars are present; otherwise the seeded in-memory demo store is used.
+ * Postgres + RLS (lib/data/postgres.ts) when DATABASE_URL is set and either KH_DATA=postgres
+ * or Supabase is configured. Otherwise the seeded in-memory demo store.
  */
+export const isPostgresEnabled = () =>
+  Boolean(process.env.DATABASE_URL) && (process.env.KH_DATA === 'postgres' || isSupabaseConfigured());
+
+/** Returns the active repository. */
 export function getRepo(): Repo {
-  return memoryRepo;
+  return isPostgresEnabled() ? postgresRepo() : memoryRepo;
 }
 export type * from './repo';
