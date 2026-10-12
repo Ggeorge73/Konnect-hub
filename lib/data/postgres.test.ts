@@ -1,13 +1,21 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  asUser,
   connectionOptions,
   createPostgresRepo,
   createSql,
   loadSession,
+  markMfaEnabled,
   textArray,
   type Sql,
 } from './postgres';
 import { runRepoContract, type Persona } from './contract';
+import { runDomainContracts } from './contract-domains';
+import { createPostgresRaidStore } from './raid-postgres';
+import { createPostgresSprintStore } from './sprints-postgres';
+import { createPostgresGateStore } from './gates-postgres';
+import { createPostgresDeliverableStore } from './deliverables-postgres';
+import { createPostgresAcceptanceRecordStore } from './acceptance-record-postgres';
 import { SEED_PROFILE_UUID } from './seed-ids';
 
 /**
@@ -70,6 +78,19 @@ describe.skipIf(!url)('postgres repo (TEST_DATABASE_URL)', () => {
   };
 
   runRepoContract('postgres', () => createPostgresRepo(sql!), sessionFor, reset);
+  runDomainContracts(
+    'postgres',
+    () => ({
+      repo: createPostgresRepo(sql!),
+      raid: createPostgresRaidStore(sql!),
+      sprints: createPostgresSprintStore(sql!),
+      gates: createPostgresGateStore(sql!),
+      deliverables: createPostgresDeliverableStore(sql!),
+      acceptance: createPostgresAcceptanceRecordStore(sql!),
+    }),
+    sessionFor,
+    reset,
+  );
 
   it('loads sessions as the user, with ids from the fixed seed uuids', async () => {
     await reset();
@@ -79,5 +100,50 @@ describe.skipIf(!url)('postgres repo (TEST_DATABASE_URL)', () => {
     expect(s.org.name).toBe('Peachtree Clinic Group');
     expect(s.user.costRate).toBeUndefined();
     expect((await sessionFor('u_admin')).user.costRate).toBe(120);
+  });
+
+  it('records a verified re-auth server-side before the decision; users cannot record one', async () => {
+    await reset();
+    const lead = await sessionFor('u_lead');
+    const sponsor = await sessionFor('u_sponsor');
+    const gates = createPostgresGateStore(sql!);
+    const phase = (await gates.getGates(lead, 'EHR')).phases.find((p) => p.gate === 3)!;
+    const review = await gates.requestReview(lead, 'EHR', { phaseId: phase.id, overrideNote: 'Friday demo' });
+    // record_reauth is not executable by signed-in users: no forging a re-auth through the API.
+    await expect(
+      asUser(sql!, sponsor.user.id, (tx) => tx`select public.record_reauth(${sponsor.user.id}::uuid, now())`),
+    ).rejects.toThrow();
+    const count = async () =>
+      Number(
+        (await sql!`select count(*) as n from public.reauth_events where user_id = ${sponsor.user.id}`)[0].n,
+      );
+    expect(await count()).toBe(0);
+    const at = new Date().toISOString();
+    await gates.decideGate(sponsor, review.id, { decision: 'approved' }, { reauthAt: at, ip: 'not-an-ip' });
+    expect(await count()).toBe(1);
+    const [row] = await sql!`select at, decided_by, ip from public.reauth_events e
+                             join public.gate_reviews g on g.id = ${review.id} where e.user_id = ${sponsor.user.id}`;
+    expect(new Date(row.at).toISOString()).toBe(at);
+    expect(row.decided_by).toBe(sponsor.user.id);
+    expect(row.ip).toBeNull();
+  });
+
+  it('marks MFA enabled for the caller only, and only at aal2', async () => {
+    await reset();
+    const member = await sessionFor('u_cmember');
+    const mfa = async (id: string) =>
+      (await sql!`select mfa_enabled from public.profiles where id = ${id}`)[0].mfa_enabled as boolean;
+    expect(await mfa(member.user.id)).toBe(false);
+    await expect(markMfaEnabled(sql!, member.user.id, 'aal1')).rejects.toThrow('authenticator');
+    expect(await mfa(member.user.id)).toBe(false);
+    expect(await markMfaEnabled(sql!, member.user.id, 'aal2')).toBe(true);
+    expect(await mfa(member.user.id)).toBe(true);
+    expect((await sessionFor('u_cmember')).user.mfaEnabled).toBe(true);
+    expect(await mfa((await sessionFor('u_cviewer')).user.id)).toBe(false);
+    // Idempotent; audited once.
+    expect(await markMfaEnabled(sql!, member.user.id, 'aal2')).toBe(true);
+    const [{ n }] = await sql!`select count(*)::int as n from public.audit_log
+                               where action = 'profile.mfa_enabled' and entity_id = ${member.user.id}`;
+    expect(n).toBe(1);
   });
 });

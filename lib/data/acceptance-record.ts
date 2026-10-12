@@ -4,6 +4,8 @@ import { DECISION_LABEL } from '../domain/gates';
 import { db } from './memory';
 import { ForbiddenError } from './errors';
 import { requireVisibleProject, writeAudit } from './gates';
+import { isPostgresEnabled } from './index';
+import { postgresAcceptanceRecordStore } from './acceptance-record-postgres';
 
 export interface AcceptanceRow {
   kind: 'Gate decision' | 'Deliverable acceptance';
@@ -25,11 +27,19 @@ export interface AcceptanceRecord {
 }
 
 /**
+ * The Acceptance Record. `AcceptanceRecordStore` has two implementations, picked like getRepo():
+ * the demo store below and the Postgres + RLS store in acceptance-record-postgres.ts.
+ */
+export interface AcceptanceRecordStore {
+  buildAcceptanceRecord(s: Session, key: string): Promise<AcceptanceRecord>;
+}
+
+/**
  * Gate decisions and deliverable acceptances for the PDF record (PDF-01).
  * The record is shareable with the client, so internal-only content (internal deliverables,
  * override notes, budget) is never included, whoever exports it.
  */
-export async function buildAcceptanceRecord(s: Session, key: string): Promise<AcceptanceRecord> {
+async function memBuildAcceptanceRecord(s: Session, key: string): Promise<AcceptanceRecord> {
   const project = requireVisibleProject(s, key);
   if (isClientRole(s.user.role) && s.user.role !== 'client_sponsor')
     throw new ForbiddenError('Only the Client Sponsor can download the Acceptance Record.');
@@ -74,3 +84,15 @@ export async function buildAcceptanceRecord(s: Session, key: string): Promise<Ac
   writeAudit(s, 'acceptance_record.export', 'project', project.id, undefined, { rows: rows.length });
   return record;
 }
+
+/** The demo-store implementation. */
+export const memoryAcceptanceRecordStore: AcceptanceRecordStore = {
+  buildAcceptanceRecord: memBuildAcceptanceRecord,
+};
+
+/** The active store: Postgres + RLS when getRepo() would pick Postgres, else the demo store. */
+export const acceptanceRecordStore = (): AcceptanceRecordStore =>
+  isPostgresEnabled() ? postgresAcceptanceRecordStore() : memoryAcceptanceRecordStore;
+
+export const buildAcceptanceRecord: AcceptanceRecordStore['buildAcceptanceRecord'] = (...a) =>
+  acceptanceRecordStore().buildAcceptanceRecord(...a);

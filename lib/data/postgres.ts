@@ -14,7 +14,7 @@ import type {
   Sprint,
   WorkItem,
 } from '../domain/types';
-import { ForbiddenError, NotFoundError, ValidationError } from './errors';
+import { ForbiddenError, NotFoundError, ReauthRequiredError, ValidationError } from './errors';
 import {
   canComment,
   canCreateProject,
@@ -35,24 +35,24 @@ import { DEMO_PROJECT_KEY } from './seed';
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-type Row = Record<string, any>;
+export type Row = Record<string, any>;
 export type Sql = postgres.Sql<any>;
-type Tx = postgres.TransactionSql<any>;
+export type Tx = postgres.TransactionSql<any>;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isUuid = (v: string | null | undefined): boolean => typeof v === 'string' && UUID_RE.test(v);
 /** Never matches a row; used where a non-uuid id is passed so the query simply finds nothing. */
-const NO_ID = '00000000-0000-0000-0000-000000000000';
-const uuidOr = (v: string) => (isUuid(v) ? v : NO_ID);
-const uuidOrNull = (v: string | null | undefined) => (v == null || v === '' ? null : uuidOr(v));
+export const NO_ID = '00000000-0000-0000-0000-000000000000';
+export const uuidOr = (v: string) => (isUuid(v) ? v : NO_ID);
+export const uuidOrNull = (v: string | null | undefined) => (v == null || v === '' ? null : uuidOr(v));
 
 /** Postgres text[] literal. Passed as a string param so it never depends on fetched array types. */
 export const textArray = (xs: readonly string[]) =>
   `{${xs.map((x) => `"${x.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(',')}}`;
 
 const likeEscape = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
-const num = (v: unknown) => (v == null ? null : Number(v));
-const opt = <T>(v: T | null | undefined) => (v == null ? undefined : v);
+export const num = (v: unknown) => (v == null ? null : Number(v));
+export const opt = <T>(v: T | null | undefined) => (v == null ? undefined : v);
 
 /**
  * Connection options for a DATABASE_URL. Besides normal URLs this accepts libpq-style socket
@@ -111,7 +111,14 @@ export function mapPgError(e: unknown): unknown {
         /row-level security/i.test(e.message) ? 'You do not have permission to do that.' : e.message,
       );
     case 'P0002':
-      return new NotFoundError(/project/i.test(e.message) ? 'Project not found' : 'Item not found');
+      if (/project/i.test(e.message)) return new NotFoundError('Project not found');
+      // Domain RPCs (0005): "gate review not found", "phase not found", "deliverable not found"…
+      if (/^(gate review|phase|deliverable|criterion|profile) not found$/i.test(e.message))
+        return new NotFoundError(e.message[0].toUpperCase() + e.message.slice(1));
+      return new NotFoundError('Item not found');
+    case '28000':
+      // has_fresh_reauth() failed inside decide_gate / decide_deliverable_criterion.
+      return new ReauthRequiredError();
     case '22023':
     case '23514':
     case '23502':
@@ -127,14 +134,47 @@ export function mapPgError(e: unknown): unknown {
   }
 }
 
+export interface AsUserOptions {
+  /**
+   * Runs first, as the server's own login role (before `set local role authenticated`), in the
+   * same transaction. Only for server-verified facts such as `record_reauth()`; never user input.
+   */
+  privileged?: (tx: Tx) => Promise<unknown>;
+  /** Extra JWT claims (e.g. `aal`), as Supabase would put them in `request.jwt.claims`. */
+  claims?: Record<string, string>;
+}
+
 /** Runs fn in a transaction as the session user, with RLS applied. */
-export async function asUser<T>(sql: Sql, userId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
+export async function asUser<T>(
+  sql: Sql,
+  userId: string,
+  fn: (tx: Tx) => Promise<T>,
+  opts: AsUserOptions = {},
+): Promise<T> {
   try {
     return (await sql.begin(async (tx) => {
+      if (opts.privileged) await opts.privileged(tx);
       await tx`set local role authenticated`;
+      const claims = JSON.stringify({ ...opts.claims, sub: userId, role: 'authenticated' });
       await tx`select set_config('request.jwt.claim.sub', ${userId}, true),
-                      set_config('request.jwt.claims',
-                        json_build_object('sub', ${userId}::text, 'role', 'authenticated')::text, true)`;
+                      set_config('request.jwt.claims', ${claims}, true)`;
+      return fn(tx);
+    })) as T;
+  } catch (e) {
+    throw mapPgError(e);
+  }
+}
+
+/**
+ * System jobs (e.g. the stale-issue cron) with no signed-in user: one transaction as
+ * `service_role`, which Supabase grants BYPASSRLS. Never used for a user request.
+ */
+export async function asService<T>(sql: Sql, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  try {
+    return (await sql.begin(async (tx) => {
+      await tx`set local role service_role`;
+      await tx`select set_config('request.jwt.claim.sub', '', true),
+                      set_config('request.jwt.claims', '{"role":"service_role"}', true)`;
       return fn(tx);
     })) as T;
   } catch (e) {
@@ -145,14 +185,14 @@ export async function asUser<T>(sql: Sql, userId: string, fn: (tx: Tx) => Promis
 // ---------------------------------------------------------------------------
 // Row mappers
 // ---------------------------------------------------------------------------
-const toOrg = (r: Row): Organization => ({
+export const toOrg = (r: Row): Organization => ({
   id: r.id,
   name: r.name,
   type: r.type,
   ...(r.logo_url ? { logoUrl: r.logo_url } : {}),
 });
 
-const toProfile = (r: Row): Profile => {
+export const toProfile = (r: Row): Profile => {
   const p: Profile = {
     id: r.id,
     orgId: r.org_id,
@@ -171,7 +211,7 @@ const toProfile = (r: Row): Profile => {
   return p;
 };
 
-const toProject = (r: Row): Project => ({
+export const toProject = (r: Row): Project => ({
   id: r.id,
   key: r.key,
   name: r.name,
@@ -195,7 +235,7 @@ const toProject = (r: Row): Project => ({
   deletedAt: r.deleted_at ?? null,
 });
 
-const toPhase = (r: Row): Phase => ({
+export const toPhase = (r: Row): Phase => ({
   id: r.id,
   projectId: r.project_id,
   gate: r.gate,
@@ -205,7 +245,7 @@ const toPhase = (r: Row): Phase => ({
   endDate: opt(r.end_date),
 });
 
-const toCriterion = (r: Row): GateCriterion => ({
+export const toCriterion = (r: Row): GateCriterion => ({
   id: r.id,
   phaseId: r.phase_id,
   text: r.text,
@@ -214,7 +254,7 @@ const toCriterion = (r: Row): GateCriterion => ({
   doneAt: opt(r.done_at),
 });
 
-const toSprint = (r: Row): Sprint => ({
+export const toSprint = (r: Row): Sprint => ({
   id: r.id,
   projectId: r.project_id,
   phaseId: r.phase_id ?? '',
@@ -226,14 +266,14 @@ const toSprint = (r: Row): Sprint => ({
   capacityHours: opt(num(r.capacity_hours)),
 });
 
-const toMember = (r: Row): ProjectMember => ({
+export const toMember = (r: Row): ProjectMember => ({
   projectId: r.project_id,
   userId: r.user_id,
   projectRole: r.project_role,
   allocationPct: Number(r.allocation_pct),
 });
 
-const toAc = (r: Row): AcceptanceCriterion => ({
+export const toAc = (r: Row): AcceptanceCriterion => ({
   id: r.id,
   text: r.text,
   status: r.status,
@@ -242,7 +282,7 @@ const toAc = (r: Row): AcceptanceCriterion => ({
   note: opt(r.note),
 });
 
-const toItem = (r: Row, acs: AcceptanceCriterion[] = []): WorkItem => ({
+export const toItem = (r: Row, acs: AcceptanceCriterion[] = []): WorkItem => ({
   id: r.id,
   projectId: r.project_id,
   number: r.number,
@@ -268,7 +308,7 @@ const toItem = (r: Row, acs: AcceptanceCriterion[] = []): WorkItem => ({
   deletedAt: r.deleted_at ?? null,
 });
 
-const toComment = (r: Row): Comment => ({
+export const toComment = (r: Row): Comment => ({
   id: r.id,
   entityType: r.entity_type,
   entityId: r.entity_id,
@@ -280,7 +320,7 @@ const toComment = (r: Row): Comment => ({
   createdAt: r.created_at,
 });
 
-const toActivity = (r: Row): ActivityEvent => ({
+export const toActivity = (r: Row): ActivityEvent => ({
   id: r.id,
   projectId: r.project_id,
   itemId: opt(r.item_id),
@@ -293,12 +333,12 @@ const toActivity = (r: Row): ActivityEvent => ({
 // ---------------------------------------------------------------------------
 // Query helpers (all run inside asUser, so RLS applies)
 // ---------------------------------------------------------------------------
-const ITEM_COLS = (tx: Tx) => tx`
+export const ITEM_COLS = (tx: Tx) => tx`
   w.id, w.project_id, w.number, w.key, w.type, w.title, w.description, w.status, w.priority,
   w.assignee_id, w.reporter_id, w.phase_id, w.sprint_id, w.parent_id, w.estimate, w.due_date,
   w.labels, w.visibility, w.position, w.created_at, w.updated_at, w.deleted_at`;
 
-async function findProject(tx: Tx, idOrKey: string): Promise<Project> {
+export async function findProject(tx: Tx, idOrKey: string): Promise<Project> {
   const rows = await tx`
     select p.*, f.bac from public.projects p
     left join public.project_financials f on f.project_id = p.id
@@ -307,7 +347,7 @@ async function findProject(tx: Tx, idOrKey: string): Promise<Project> {
   return toProject(rows[0]);
 }
 
-async function withCriteria(tx: Tx, rows: Row[]): Promise<WorkItem[]> {
+export async function withCriteria(tx: Tx, rows: Row[]): Promise<WorkItem[]> {
   if (!rows.length) return [];
   const acs = await tx`
     select * from public.acceptance_criteria
@@ -318,7 +358,7 @@ async function withCriteria(tx: Tx, rows: Row[]): Promise<WorkItem[]> {
   return rows.map((r) => toItem(r, by.get(r.id) ?? []));
 }
 
-async function findItem(tx: Tx, idOrKey: string): Promise<WorkItem> {
+export async function findItem(tx: Tx, idOrKey: string): Promise<WorkItem> {
   const rows = await tx`
     select ${ITEM_COLS(tx)} from public.work_items w
     where w.deleted_at is null
@@ -327,7 +367,7 @@ async function findItem(tx: Tx, idOrKey: string): Promise<WorkItem> {
   return (await withCriteria(tx, rows))[0];
 }
 
-async function logActivity(
+export async function logActivity(
   tx: Tx,
   s: Session,
   projectId: string,
@@ -341,7 +381,7 @@ async function logActivity(
     values (${projectId}, ${itemId ?? null}, ${s.user.id}, ${action}, ${detail}, ${visibility})`;
 }
 
-async function audit(
+export async function audit(
   tx: Tx,
   s: Session,
   projectId: string | null,
@@ -829,6 +869,24 @@ export async function loadSession(sql: Sql, userId: string): Promise<Session | n
     if (!o) return null;
     return { user: toProfile(u), org: toOrg(o) };
   });
+}
+
+/**
+ * After a successful TOTP verify (session at aal2): sets the caller's own profiles.mfa_enabled
+ * through mark_mfa_enabled() (0009). `aal` is the verified JWT claim; the function refuses
+ * anything but aal2.
+ */
+export async function markMfaEnabled(sql: Sql, userId: string, aal: string): Promise<boolean> {
+  if (!isUuid(userId)) throw new NotFoundError('Profile not found');
+  return asUser(
+    sql,
+    userId,
+    async (tx) => {
+      const [r] = await tx`select public.mark_mfa_enabled() as ok`;
+      return Boolean(r.ok);
+    },
+    { claims: { aal } },
+  );
 }
 
 const g = globalThis as unknown as { __khSql?: Sql };

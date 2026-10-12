@@ -12,6 +12,28 @@ import {
 import { db } from './memory';
 import { newId } from './ids';
 import { ForbiddenError, NotFoundError, ValidationError } from './errors';
+import { isPostgresEnabled } from './index';
+import { postgresSprintStore } from './sprints-postgres';
+
+/**
+ * Sprints, planning settings and the timeline. `SprintStore` has two implementations, picked
+ * like getRepo(): the demo store below and the Postgres + RLS store in sprints-postgres.ts.
+ * Shared behaviour: lib/data/contract-sprints.ts.
+ */
+export interface SprintStore {
+  listSprints(s: Session, projectKey: string): Promise<SprintList>;
+  createSprint(s: Session, input: SprintInput & { projectId: string }): Promise<Sprint>;
+  updateSprint(s: Session, id: string, patch: SprintPatch): Promise<Sprint>;
+  startSprint(s: Session, id: string): Promise<Sprint>;
+  completeSprint(s: Session, id: string, carryOver: CarryOver): Promise<CompletionResult>;
+  setHoursPerPoint(
+    s: Session,
+    projectKey: string,
+    hoursPerPoint: number,
+  ): Promise<{ projectId: string; hoursPerPoint: number }>;
+  getTimeline(s: Session, projectKey: string): Promise<TimelineData>;
+  reschedule(s: Session, projectKey: string, input: RescheduleInput): Promise<Sprint | ItemSchedule>;
+}
 
 const now = () => new Date().toISOString();
 
@@ -57,7 +79,7 @@ export interface SprintList {
   sprints: Sprint[];
 }
 
-export function listSprints(s: Session, projectKey: string): SprintList {
+function memListSprints(s: Session, projectKey: string): SprintList {
   const p = requireProject(s, projectKey);
   return {
     projectId: p.id,
@@ -70,7 +92,7 @@ export function listSprints(s: Session, projectKey: string): SprintList {
   };
 }
 
-export function createSprint(s: Session, input: SprintInput & { projectId: string }): Sprint {
+function memCreateSprint(s: Session, input: SprintInput & { projectId: string }): Sprint {
   const p = requireProject(s, input.projectId);
   requireManager(s, p);
   fail(validateSprint(input));
@@ -95,7 +117,7 @@ export function createSprint(s: Session, input: SprintInput & { projectId: strin
 
 export type SprintPatch = Partial<Omit<SprintInput, 'phaseId'>> & { phaseId?: string };
 
-export function updateSprint(s: Session, id: string, patch: SprintPatch): Sprint {
+function memUpdateSprint(s: Session, id: string, patch: SprintPatch): Sprint {
   const { sprint, project } = requireSprint(s, id);
   requireManager(s, project);
   const next = { ...sprint, ...patch };
@@ -119,7 +141,7 @@ export function updateSprint(s: Session, id: string, patch: SprintPatch): Sprint
   return sprint;
 }
 
-export function startSprint(s: Session, id: string): Sprint {
+function memStartSprint(s: Session, id: string): Sprint {
   const { sprint, project } = requireSprint(s, id);
   requireManager(s, project);
   const rule = canStartSprint(sprint, db().sprints);
@@ -135,7 +157,7 @@ export interface CompletionResult {
   targetSprintId: string | null;
 }
 
-export function completeSprint(s: Session, id: string, carryOver: CarryOver): CompletionResult {
+function memCompleteSprint(s: Session, id: string, carryOver: CarryOver): CompletionResult {
   const { sprint, project } = requireSprint(s, id);
   requireManager(s, project);
   const d = db();
@@ -167,7 +189,7 @@ export function completeSprint(s: Session, id: string, carryOver: CarryOver): Co
   return { sprint, moved: plan.unfinished.map((i) => i.key), targetSprintId: plan.targetSprintId };
 }
 
-export function setHoursPerPoint(s: Session, projectKey: string, hoursPerPoint: number) {
+function memSetHoursPerPoint(s: Session, projectKey: string, hoursPerPoint: number) {
   const p = requireProject(s, projectKey);
   requireManager(s, p);
   if (!(hoursPerPoint > 0 && hoursPerPoint <= 100))
@@ -199,7 +221,7 @@ export interface TimelineData {
   canEdit: boolean;
 }
 
-export function getTimeline(s: Session, projectKey: string): TimelineData {
+function memGetTimeline(s: Session, projectKey: string): TimelineData {
   const p = requireProject(s, projectKey);
   const d = db();
   const items = d.items.filter(
@@ -237,13 +259,13 @@ export interface RescheduleInput {
 }
 
 /** Drag-to-reschedule: a sprint's own dates, or an explicit date range stored for an epic. */
-export function reschedule(s: Session, projectKey: string, input: RescheduleInput) {
+function memReschedule(s: Session, projectKey: string, input: RescheduleInput) {
   const p = requireProject(s, projectKey);
   requireManager(s, p);
   if (input.kind === 'sprint') {
     const sprint = db().sprints.find((x) => x.id === input.id && x.projectId === p.id);
     if (!sprint) throw new NotFoundError('Sprint not found');
-    return updateSprint(s, sprint.id, { startDate: input.startDate, endDate: input.endDate });
+    return memUpdateSprint(s, sprint.id, { startDate: input.startDate, endDate: input.endDate });
   }
   const d = db();
   const epic = d.items.find((i) => i.id === input.id && i.projectId === p.id && !i.deletedAt);
@@ -258,3 +280,30 @@ export function reschedule(s: Session, projectKey: string, input: RescheduleInpu
 }
 
 const pick = ({ startDate, endDate }: RescheduleInput) => ({ startDate, endDate });
+
+/** The demo-store implementation (synchronous underneath). */
+export const memorySprintStore: SprintStore = {
+  listSprints: async (...a) => memListSprints(...a),
+  createSprint: async (...a) => memCreateSprint(...a),
+  updateSprint: async (...a) => memUpdateSprint(...a),
+  startSprint: async (...a) => memStartSprint(...a),
+  completeSprint: async (...a) => memCompleteSprint(...a),
+  setHoursPerPoint: async (...a) => memSetHoursPerPoint(...a),
+  getTimeline: async (...a) => memGetTimeline(...a),
+  reschedule: async (...a) => memReschedule(...a),
+};
+
+/** The active sprint store: Postgres + RLS when getRepo() would pick Postgres, else the demo store. */
+export const sprintStore = (): SprintStore =>
+  isPostgresEnabled() ? postgresSprintStore() : memorySprintStore;
+
+// Public API used by route handlers: each call goes to the active store.
+export const listSprints: SprintStore['listSprints'] = (...a) => sprintStore().listSprints(...a);
+export const createSprint: SprintStore['createSprint'] = (...a) => sprintStore().createSprint(...a);
+export const updateSprint: SprintStore['updateSprint'] = (...a) => sprintStore().updateSprint(...a);
+export const startSprint: SprintStore['startSprint'] = (...a) => sprintStore().startSprint(...a);
+export const completeSprint: SprintStore['completeSprint'] = (...a) => sprintStore().completeSprint(...a);
+export const setHoursPerPoint: SprintStore['setHoursPerPoint'] = (...a) =>
+  sprintStore().setHoursPerPoint(...a);
+export const getTimeline: SprintStore['getTimeline'] = (...a) => sprintStore().getTimeline(...a);
+export const reschedule: SprintStore['reschedule'] = (...a) => sprintStore().reschedule(...a);
