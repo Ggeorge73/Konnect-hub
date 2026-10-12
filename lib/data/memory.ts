@@ -18,6 +18,7 @@ import { canTransition, STATUS_LABEL } from '../domain/workflow';
 import { GATE_NAMES } from '../domain/templates';
 import { recordStatusChange } from './pulse-history';
 import { onCommentAdded, onItemCreated, onItemUpdated } from './notify';
+import { restrictedRefusal, RESTRICTED_REFUSED } from '../domain/capacity';
 
 const g = globalThis as unknown as { __khDb?: Db };
 export const db = (): Db => (g.__khDb ??= buildSeed());
@@ -73,6 +74,22 @@ function audit(
     after,
     at: now(),
   });
+}
+
+/** SEC-02: a non-U.S. person can't be the assignee of an item in a restricted project (audited). */
+function checkAssignee(s: Session, project: Project, assigneeId: string | null | undefined) {
+  if (!assigneeId) return;
+  const msg = restrictedRefusal(
+    project,
+    db().profiles.find((p) => p.id === assigneeId),
+  );
+  if (!msg) return;
+  audit(s, RESTRICTED_REFUSED, 'project', project.id, undefined, {
+    userId: assigneeId,
+    via: 'assignee',
+    message: msg,
+  });
+  throw new ValidationError(msg);
 }
 
 function summarize(s: Session, p: Project): ProjectSummary {
@@ -263,6 +280,7 @@ export const memoryRepo: Repo = {
     if (!canEditItems(s.user) && !(clientRequest && s.user.role !== 'client_viewer'))
       throw new ForbiddenError('You cannot create items in this project.');
     if (!input.title.trim()) throw new ValidationError('Title is required.');
+    checkAssignee(s, project, input.assigneeId);
     const d = db();
     const stored = d.projects.find((p) => p.id === project.id)!;
     const n = stored.nextItemNumber++;
@@ -303,7 +321,7 @@ export const memoryRepo: Repo = {
     const d = db();
     const item = d.items.find((i) => i.id === id || i.key === id);
     if (!item || !visibleItem(s, item)) throw new NotFoundError('Item not found');
-    requireProject(s, item.projectId);
+    const project = requireProject(s, item.projectId);
     const { offlineAcceptanceNote, ...fields } = patch;
     const onlyStatus = Object.keys(fields).every((k) => k === 'status' || k === 'position');
     if (!canEditItems(s.user) && !(isClientRole(s.user.role) && onlyStatus))
@@ -312,6 +330,8 @@ export const memoryRepo: Repo = {
       const r = canTransition(item.status, fields.status, { role: s.user.role, offlineAcceptanceNote });
       if (!r.ok) throw new ForbiddenError(r.reason);
     }
+    if (fields.assigneeId && fields.assigneeId !== item.assigneeId)
+      checkAssignee(s, project, fields.assigneeId);
     const before = { ...item };
     Object.assign(item, fields, { updatedAt: now() });
     if (fields.status && fields.status !== before.status) {

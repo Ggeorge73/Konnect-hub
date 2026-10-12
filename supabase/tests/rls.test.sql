@@ -245,9 +245,12 @@ begin
   perform tests.as_user('admin');
   perform tests.eq(tests.count('projects'), 3, 'admin sees all projects');
 
-  -- Restricted project: membership is not enough without US-person status.
+  -- Restricted project: membership is not enough without US-person status. (0011 refuses the
+  -- membership itself; triggers are bypassed here to model a legacy row and prove RLS still hides RVB.)
   perform tests.as_owner();
+  set local session_replication_role = replica;
   insert into public.project_members (project_id, user_id) values (tests.rvb(), tests.uid('assoc'));
+  set local session_replication_role = origin;
   perform tests.as_user('assoc');
   perform tests.eq(tests.count('projects', format('id = %L', tests.rvb())), 0, 'non-US associate sees restricted RVB');
   perform tests.eq(tests.count('work_items', format('project_id = %L', tests.rvb())), 0, 'non-US associate sees RVB items');
@@ -1044,6 +1047,114 @@ begin
   perform tests.eq(tests.count('notifications', 'kind = ''gate_requested'''), 1, 'sponsor gets the shared notification');
   perform tests.throws(format('update public.notifications set visibility = ''internal'' where user_id = %L',
                               tests.uid('sponsor')), 'client notification flipped to internal');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 18. Capacity: weekly allocations, grid totals, directory tags and the U.S.-person rule on
+--     restricted projects (0011_capacity.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_week date := date_trunc('week', current_date)::date;
+  v_tue date := date_trunc('week', current_date)::date + 1;
+begin
+  -- Restricted RVB: a Lead's direct writes putting the non-U.S. associate on it are refused.
+  perform tests.as_user('lead');
+  perform tests.throws(format('insert into public.project_members (project_id, user_id, project_role, allocation_pct) values (%L, %L, ''Integration'', 50)',
+                              tests.rvb(), tests.uid('assoc')), 'lead adds non-US member to restricted RVB');
+  perform tests.throws(format('insert into public.allocations (project_id, user_id, start_date, end_date, pct, hours) values (%L, %L, %L, %L, 0, 8)',
+                              tests.rvb(), tests.uid('assoc'), v_week, v_week + 6), 'lead allocates non-US person on RVB');
+  perform tests.throws(format('update public.work_items set assignee_id = %L where id = %L',
+                              tests.uid('assoc'), tests.item('RVB-1')), 'lead assigns non-US person to an RVB item');
+  perform tests.throws(format('insert into public.work_items (project_id, type, title, reporter_id, assignee_id) values (%L, ''task'', ''x'', %L, %L)',
+                              tests.rvb(), tests.uid('lead'), tests.uid('assoc')), 'lead creates an RVB item for a non-US assignee');
+  perform tests.eq(tests.count('project_members', format('project_id = %L and user_id = %L', tests.rvb(), tests.uid('assoc'))), 0,
+                   'no non-US member on RVB');
+  -- U.S. persons are fine on RVB; non-US people are fine on unrestricted projects.
+  insert into public.project_members (project_id, user_id, project_role, allocation_pct)
+  values (tests.rvb(), tests.uid('team'), 'QA', 10);
+  update public.work_items set assignee_id = tests.uid('team') where id = tests.item('RVB-1');
+  update public.work_items set assignee_id = tests.uid('assoc') where id = tests.item('EHR-12');
+  perform tests.ok((select assignee_id = tests.uid('assoc') from public.work_items where id = tests.item('EHR-12')),
+                   'non-US assignee on unrestricted EHR');
+
+  -- Even the table owner cannot bypass the rule.
+  perform tests.as_owner();
+  perform tests.throws(format('insert into public.project_members (project_id, user_id) values (%L, %L)',
+                              tests.rvb(), tests.uid('assoc')), 'owner adds non-US member to RVB');
+
+  -- Flipping to restricted is refused while non-U.S. people are on the project, naming them.
+  perform tests.as_user('lead');
+  begin
+    update public.projects set restricted = true where id = tests.ehr();
+    perform tests.ok(false, 'EHR flipped to restricted with a non-US member');
+  exception when check_violation then
+    perform tests.ok(sqlerrm like '%remove these non-U.S. people first: Sam Rivera.', 'flip refusal lists Sam Rivera: ' || sqlerrm);
+  end;
+  perform tests.as_user('admin');
+  update public.projects set restricted = true where id = tests.psr();
+  perform tests.ok((select restricted from public.projects where id = tests.psr()), 'admin restricts PSR (US people only)');
+
+  -- An admin cannot clear the U.S.-person flag of someone on a restricted project.
+  perform tests.throws(format('update public.profiles set us_person = false where id = %L', tests.uid('dev')),
+                       'clear US flag of an RVB member');
+  update public.profiles set us_person = false where id = tests.uid('cmember');
+  perform tests.ok((select not us_person from public.profiles where id = tests.uid('cmember')), 'admin clears a free person''s flag');
+end $$;
+rollback;
+
+begin;
+do $$
+declare
+  v_week date := date_trunc('week', current_date)::date;
+  v_row public.allocations;
+begin
+  -- Weekly rows: Monday start, Sunday end, pct derived from hours / capacity, one per week.
+  perform tests.as_user('lead');
+  insert into public.allocations (project_id, user_id, start_date, end_date, pct, hours)
+  values (tests.ehr(), tests.uid('team'), v_week + 84, v_week, 0, 30) returning * into v_row;
+  perform tests.ok(v_row.end_date = v_row.start_date + 6, 'allocation end_date is the Sunday');
+  perform tests.ok(v_row.pct = 75, format('pct derived from hours (got %s)', v_row.pct));
+  perform tests.throws(format('insert into public.allocations (project_id, user_id, start_date, end_date, pct, hours) values (%L, %L, %L, %L, 0, 8)',
+                              tests.ehr(), tests.uid('team'), v_week + 85, v_week + 91), 'allocation not on a Monday');
+  perform tests.throws(format('insert into public.allocations (project_id, user_id, start_date, end_date, pct, hours) values (%L, %L, %L, %L, 0, 8)',
+                              tests.ehr(), tests.uid('team'), v_week + 84, v_week + 90), 'duplicate weekly allocation');
+  perform tests.throws(format('insert into public.allocations (project_id, user_id, start_date, end_date, pct, hours) values (%L, %L, %L, %L, 0, 8)',
+                              tests.psr(), tests.uid('team'), v_week + 84, v_week + 90), 'lead writes allocations on PSR (not theirs)');
+  perform tests.as_user('team');
+  update public.allocations set hours = 1 where project_id = tests.ehr();
+  perform tests.eq(tests.count('allocations', format('project_id = %L and hours = 1', tests.ehr())), 0, 'team edit had no effect');
+
+  -- Grid totals cover every project (PSR is invisible to the Lead) but only for planning roles.
+  perform tests.as_user('lead');
+  perform tests.eq(tests.count('allocations', format('project_id = %L', tests.psr())), 0, 'lead sees no PSR allocations');
+  perform tests.ok((select hours = 32 from public.capacity_week_totals(v_week, v_week) where user_id = tests.uid('team')),
+                   'lead sees Tiara''s total of 32 h including PSR');
+  perform tests.ok((select hours = 48 from public.capacity_week_totals(v_week + 14, v_week + 14) where user_id = tests.uid('dev')),
+                   'seeded spike: dev at 48 h in the third week');
+  perform tests.as_user('team');
+  perform tests.ok(exists (select 1 from public.capacity_week_totals(v_week, v_week)), 'team member reads grid totals');
+  perform tests.as_user('assoc');
+  perform tests.eq((select count(*) from public.capacity_week_totals(v_week, v_week + 77)), 0, 'associate reads grid totals');
+  perform tests.as_user('sponsor');
+  perform tests.eq((select count(*) from public.capacity_week_totals(v_week, v_week + 77)), 0, 'client reads grid totals');
+  perform tests.eq(tests.count('allocations'), 0, 'client sees allocations');
+
+  -- Directory tags: Leads and Admins edit skills / certifications of internal staff only.
+  perform tests.as_user('lead');
+  perform public.set_person_tags(tests.uid('team'), '{QA,Accessibility}', '{ISTQB}');
+  perform tests.ok((select skills = '{QA,Accessibility}' and certifications = '{ISTQB}' from public.profiles
+                    where id = tests.uid('team')), 'lead edits skills and certifications');
+  perform tests.throws(format('select public.set_person_tags(%L, ''{x}'', null)', tests.uid('sponsor')), 'lead tags a client');
+  update public.profiles set certifications = '{x}' where id = tests.uid('team');
+  perform tests.ok((select certifications = '{ISTQB}' from public.profiles where id = tests.uid('team')),
+                   'lead cannot edit another profile directly');
+  perform tests.as_user('team');
+  perform tests.throws(format('select public.set_person_tags(%L, ''{x}'', null)', tests.uid('dev')), 'team member edits tags');
+  perform tests.as_user('assoc');
+  perform tests.eq(tests.count('profile_rates'), 0, 'associate reads cost rates');
 end $$;
 rollback;
 
