@@ -1,0 +1,171 @@
+import type { RaidEntry } from '../domain/raid';
+import { computeSlaDue } from '../domain/raid';
+import type { Notification } from '../domain/notifications';
+
+const DAY = 86_400_000;
+
+/**
+ * Demo RAID register. Dates are relative to `now` so the stale issue (14 days, no update)
+ * and SLA states stay true whenever the demo is started.
+ */
+export function seedRaid(now: Date = new Date()): { raid: RaidEntry[]; notifications: Notification[] } {
+  const ago = (days: number) => new Date(now.getTime() - days * DAY).toISOString();
+  const dateIn = (days: number) => new Date(now.getTime() + days * DAY).toISOString().slice(0, 10);
+  const base = (id: string, projectId: string, createdDaysAgo: number, updatedDaysAgo = createdDaysAgo) => ({
+    id,
+    projectId,
+    createdBy: 'u_lead',
+    createdAt: ago(createdDaysAgo),
+    updatedAt: ago(updatedDaysAgo),
+    linkedItemIds: [] as string[],
+  });
+
+  const staleCreated = new Date(now.getTime() - 14 * DAY);
+  const criticalCreated = new Date(now.getTime() - 1 * DAY);
+
+  const raid: RaidEntry[] = [
+    {
+      ...base('rd_ehr_1', 'p_ehr', 9, 2),
+      kind: 'risk',
+      title: 'Duplicate patient records delay cutover',
+      description: 'Leading-zero MRNs create duplicate patients in the conversion dry-run.',
+      category: 'technical',
+      ownerId: 'u_dev',
+      probability: 4,
+      impact: 4,
+      residualProbability: 2,
+      residualImpact: 3,
+      mitigation: 'Normalise MRNs before load and re-run the dry-run before the cutover rehearsal.',
+      roam: 'owned',
+      status: 'open',
+      visibility: 'shared',
+      linkedItemIds: ['wi_ehr_7', 'wi_ehr_16'],
+    },
+    {
+      ...base('rd_ehr_2', 'p_ehr', 20, 6),
+      kind: 'risk',
+      title: 'Integration estimate may be low',
+      description: 'Lab and pharmacy vendor effort could exceed the fixed-fee allowance.',
+      category: 'cost',
+      ownerId: 'u_lead',
+      probability: 3,
+      impact: 4,
+      residualProbability: 2,
+      residualImpact: 3,
+      mitigation: 'Review the estimate with the integration associate before the Accept gate.',
+      roam: 'owned',
+      status: 'open',
+      visibility: 'internal',
+      linkedItemIds: ['wi_ehr_23'],
+    },
+    {
+      ...base('rd_ehr_3', 'p_ehr', 15, 4),
+      kind: 'risk',
+      title: 'Super-users unavailable during training window',
+      description: 'Clinic super-users are also covering flu-season clinics in late October.',
+      category: 'resource',
+      ownerId: 'u_team',
+      probability: 2,
+      impact: 3,
+      residualProbability: 1,
+      residualImpact: 3,
+      mitigation: 'Offer two recorded sessions and a Saturday make-up session.',
+      roam: 'accepted',
+      status: 'open',
+      visibility: 'internal',
+      linkedItemIds: ['wi_ehr_11'],
+    },
+    {
+      ...base('rd_ehr_4', 'p_ehr', 40, 25),
+      kind: 'risk',
+      title: 'Business associate agreement not countersigned',
+      description: 'The EHR vendor BAA was pending at mobilization.',
+      category: 'regulatory',
+      ownerId: 'u_admin',
+      probability: 2,
+      impact: 5,
+      residualProbability: 1,
+      residualImpact: 1,
+      mitigation: 'Escalate through the client COO.',
+      roam: 'resolved',
+      status: 'closed',
+      closureNote: 'Countersigned BAA received and filed in the contract folder.',
+      closedAt: ago(25),
+      visibility: 'internal',
+    },
+    {
+      ...base('rd_ehr_5', 'p_ehr', 14),
+      kind: 'issue',
+      title: 'Provider schedule extract missing two clinics',
+      description: 'The legacy extract only returned Midtown and Decatur schedules.',
+      ownerId: 'u_assoc',
+      severity: 'major',
+      slaDue: computeSlaDue('major', staleCreated).toISOString(),
+      status: 'open',
+      visibility: 'internal',
+      linkedItemIds: ['wi_ehr_21'],
+    },
+    {
+      ...base('rd_ehr_6', 'p_ehr', 1),
+      kind: 'issue',
+      title: 'Dry-run halted on duplicate MRNs',
+      description: 'Conversion stopped at 70% after the duplicate check failed.',
+      ownerId: 'u_dev',
+      severity: 'critical',
+      slaDue: computeSlaDue('critical', criticalCreated).toISOString(),
+      status: 'in_progress',
+      visibility: 'internal',
+      linkedItemIds: ['wi_ehr_16'],
+    },
+    {
+      ...base('rd_ehr_7', 'p_ehr', 30, 10),
+      kind: 'assumption',
+      title: 'Clinics keep current appointment types through go-live',
+      description: 'No new visit types are introduced until 30 days after go-live.',
+      ownerId: 'u_lead',
+      status: 'open',
+      visibility: 'internal',
+      date: dateIn(21),
+    },
+    {
+      ...base('rd_ehr_8', 'p_ehr', 18, 3),
+      kind: 'dependency',
+      title: 'Lab vendor provides production HL7 ADT endpoint',
+      description: 'The lab vendor must stand up and share the production ADT endpoint.',
+      ownerId: 'u_assoc',
+      status: 'in_progress',
+      visibility: 'internal',
+      date: dateIn(8),
+      linkedItemIds: ['wi_ehr_12'],
+    },
+    {
+      ...base('rd_ehr_9', 'p_ehr', 12),
+      kind: 'decision',
+      title: 'Go live in two waves of two clinics',
+      description: 'Midtown and Decatur first, then Marietta and Smyrna two weeks later.',
+      ownerId: 'u_lead',
+      status: 'closed',
+      visibility: 'internal',
+      date: ago(12).slice(0, 10),
+      decidedBy: 'u_lead',
+      rationale: 'Halves the at-the-elbow support load and lets wave 2 learn from wave 1.',
+    },
+    {
+      ...base('rd_rvb_1', 'p_rvb', 10, 5),
+      kind: 'risk',
+      title: 'County network change freeze',
+      description: 'A November change freeze could block the production deployment.',
+      category: 'schedule',
+      ownerId: 'u_lead',
+      probability: 3,
+      impact: 5,
+      residualProbability: 2,
+      residualImpact: 4,
+      mitigation: 'Request a freeze exception early through the county CIO.',
+      roam: 'owned',
+      status: 'open',
+      visibility: 'shared',
+    },
+  ];
+  return { raid, notifications: [] };
+}
