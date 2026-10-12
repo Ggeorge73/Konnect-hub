@@ -16,6 +16,8 @@ import {
 import { isReauthFresh } from '../domain/gates';
 import { STATUS_LABEL } from '../domain/workflow';
 import { db } from './memory';
+import { isPostgresEnabled } from './index';
+import { postgresDeliverableStore } from './deliverables-postgres';
 import { newId } from './ids';
 import { ForbiddenError, NotFoundError, ValidationError } from './errors';
 import {
@@ -25,6 +27,29 @@ import {
   writeAudit,
   type DecideContext,
 } from './gates';
+import { onDeliverableSubmitted } from './notify';
+
+/**
+ * Deliverables and client acceptance. `DeliverableStore` has two implementations, picked like
+ * getRepo(): the demo store below and the Postgres + RLS store in deliverables-postgres.ts
+ * (decide_deliverable_criterion RPC). Shared behaviour: lib/data/contract-deliverables.ts.
+ */
+export interface DeliverableStore {
+  listDeliverables(s: Session, key: string): Promise<DeliverableView[]>;
+  /** Deliverables awaiting a decision from this client user ("Needs your approval"). */
+  listAwaitingAcceptance(s: Session): Promise<DeliverableView[]>;
+  createDeliverable(s: Session, key: string, input: DeliverableInput): Promise<DeliverableView>;
+  updateDeliverable(s: Session, id: string, patch: Partial<DeliverableInput>): Promise<DeliverableView>;
+  submitDeliverable(s: Session, id: string): Promise<DeliverableView>;
+  /** Client acceptance of one criterion; needs a fresh re-auth. A rejection reopens linked items. */
+  decideCriterion(
+    s: Session,
+    id: string,
+    criterionId: string,
+    input: { status: 'accepted' | 'rejected'; note?: string },
+    ctx: DecideContext,
+  ): Promise<DeliverableView>;
+}
 
 const now = () => new Date().toISOString();
 
@@ -50,7 +75,7 @@ function requireDeliverable(s: Session, id: string) {
   return { d, project };
 }
 
-export async function listDeliverables(s: Session, key: string): Promise<DeliverableView[]> {
+async function memListDeliverables(s: Session, key: string): Promise<DeliverableView[]> {
   const project = requireVisibleProject(s, key);
   return db()
     .deliverables.filter((d) => d.projectId === project.id && canSeeDeliverable(s.user, d))
@@ -59,7 +84,7 @@ export async function listDeliverables(s: Session, key: string): Promise<Deliver
 }
 
 /** Deliverables awaiting a decision from this client user ("Needs your approval"). */
-export async function listAwaitingAcceptance(s: Session): Promise<DeliverableView[]> {
+async function memListAwaitingAcceptance(s: Session): Promise<DeliverableView[]> {
   const dbx = db();
   return dbx.deliverables
     .filter((d) => d.status === 'submitted' && canSeeDeliverable(s.user, d))
@@ -96,7 +121,7 @@ function validate(projectId: string, input: Partial<DeliverableInput>) {
       throw new ValidationError('Linked items must belong to this project.');
 }
 
-export async function createDeliverable(s: Session, key: string, input: DeliverableInput) {
+async function memCreateDeliverable(s: Session, key: string, input: DeliverableInput) {
   const project = requireVisibleProject(s, key);
   if (!canEditDeliverables(s.user)) throw new ForbiddenError('Only the Konnector team creates deliverables.');
   validate(project.id, input);
@@ -124,7 +149,7 @@ export async function createDeliverable(s: Session, key: string, input: Delivera
   return view(s, d);
 }
 
-export async function updateDeliverable(s: Session, id: string, patch: Partial<DeliverableInput>) {
+async function memUpdateDeliverable(s: Session, id: string, patch: Partial<DeliverableInput>) {
   const { d } = requireDeliverable(s, id);
   if (!canEditDeliverables(s.user)) throw new ForbiddenError('Only the Konnector team edits deliverables.');
   if (d.status === 'submitted' || d.status === 'accepted')
@@ -153,7 +178,7 @@ export async function updateDeliverable(s: Session, id: string, patch: Partial<D
   return view(s, d);
 }
 
-export async function submitDeliverable(s: Session, id: string) {
+async function memSubmitDeliverable(s: Session, id: string) {
   const { d, project } = requireDeliverable(s, id);
   if (!canEditDeliverables(s.user)) throw new ForbiddenError('Only the Konnector team submits deliverables.');
   const ok = canSubmit(d);
@@ -170,10 +195,11 @@ export async function submitDeliverable(s: Session, id: string) {
     `Deliverable "${d.name}" submitted for client acceptance`,
   );
   writeAudit(s, 'deliverable.submit', 'deliverable', d.id, before, d.status);
+  onDeliverableSubmitted(s, project, d);
   return view(s, d);
 }
 
-export async function decideCriterion(
+async function memDecideCriterion(
   s: Session,
   id: string,
   criterionId: string,
@@ -248,3 +274,31 @@ function reopenLinkedItems(s: Session, d: Deliverable) {
     writeAudit(s, 'item.system_reopen', 'work_item', item.id, from, REOPEN_STATUS);
   }
 }
+
+/** The demo-store implementation. */
+export const memoryDeliverableStore: DeliverableStore = {
+  listDeliverables: memListDeliverables,
+  listAwaitingAcceptance: memListAwaitingAcceptance,
+  createDeliverable: memCreateDeliverable,
+  updateDeliverable: memUpdateDeliverable,
+  submitDeliverable: memSubmitDeliverable,
+  decideCriterion: memDecideCriterion,
+};
+
+/** The active store: Postgres + RLS when getRepo() would pick Postgres, else the demo store. */
+export const deliverableStore = (): DeliverableStore =>
+  isPostgresEnabled() ? postgresDeliverableStore() : memoryDeliverableStore;
+
+// Public API used by route handlers and pages: each call goes to the active store.
+export const listDeliverables: DeliverableStore['listDeliverables'] = (...a) =>
+  deliverableStore().listDeliverables(...a);
+export const listAwaitingAcceptance: DeliverableStore['listAwaitingAcceptance'] = (...a) =>
+  deliverableStore().listAwaitingAcceptance(...a);
+export const createDeliverable: DeliverableStore['createDeliverable'] = (...a) =>
+  deliverableStore().createDeliverable(...a);
+export const updateDeliverable: DeliverableStore['updateDeliverable'] = (...a) =>
+  deliverableStore().updateDeliverable(...a);
+export const submitDeliverable: DeliverableStore['submitDeliverable'] = (...a) =>
+  deliverableStore().submitDeliverable(...a);
+export const decideCriterion: DeliverableStore['decideCriterion'] = (...a) =>
+  deliverableStore().decideCriterion(...a);

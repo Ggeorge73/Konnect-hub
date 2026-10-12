@@ -62,8 +62,14 @@ export function MfaForm({ configured }: { configured: boolean }) {
       factorId: state.factorId,
       code: code.trim(),
     });
+    if (error) {
+      setBusy(false);
+      return setError(error.message);
+    }
+    // The session is now aal2: record the enrolment on the profile (profiles.mfa_enabled).
+    // Best effort: access already depends on aal2, not on this flag.
+    await fetch('/api/session/mfa', { method: 'POST' }).catch(() => undefined);
     setBusy(false);
-    if (error) return setError(error.message);
     router.replace('/');
     router.refresh();
   };

@@ -41,8 +41,13 @@ export const qk = {
   search: (q: string, f: string) => ['search', q, f] as const,
 };
 
-export const useMe = () =>
-  useQuery({ queryKey: qk.me, queryFn: () => api<{ user: Profile; org: Organization }>('/api/session') });
+/** GET /api/session: `auth` is 'supabase' (real sign-in) or 'demo' (persona switcher). */
+export interface Me {
+  user: Profile;
+  org: Organization;
+  auth: 'supabase' | 'demo';
+}
+export const useMe = () => useQuery({ queryKey: qk.me, queryFn: () => api<Me>('/api/session') });
 export const useProjects = () =>
   useQuery({ queryKey: qk.projects, queryFn: () => api<ProjectSummary[]>('/api/projects') });
 export const useProject = (key: string) =>

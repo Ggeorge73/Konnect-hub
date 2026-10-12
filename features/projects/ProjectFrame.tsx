@@ -19,10 +19,12 @@ export const useProjectBundle = () => {
 
 const TABS = [
   { label: 'Overview', seg: '' },
+  { label: 'Dashboard', seg: 'dashboard' },
   { label: 'Board', seg: 'board' },
   { label: 'Backlog', seg: 'backlog' },
   { label: 'List', seg: 'list' },
   { label: 'Timeline', seg: 'timeline' },
+  { label: 'Metrics', seg: 'metrics' },
   { label: 'RAID', seg: 'raid' },
   { label: 'Gates', seg: 'gates' },
   { label: 'Deliverables', seg: 'deliverables' },

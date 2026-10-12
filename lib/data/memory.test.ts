@@ -2,11 +2,30 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { memoryRepo as repo, resetDb, db } from './memory';
 import { sessionFor } from '../session';
 import { runRepoContract } from './contract';
+import { runDomainContracts } from './contract-domains';
+import { memoryRaidStore } from './raid';
+import { memorySprintStore } from './sprints';
+import { memoryGateStore } from './gates';
+import { memoryDeliverableStore } from './deliverables';
+import { memoryAcceptanceRecordStore } from './acceptance-record';
 
 const as = (id: string) => sessionFor(id);
 
 // Shared behaviour, also run against Postgres + RLS in postgres.test.ts.
 runRepoContract('memory', () => repo, sessionFor, resetDb);
+runDomainContracts(
+  'memory',
+  () => ({
+    repo,
+    raid: memoryRaidStore,
+    sprints: memorySprintStore,
+    gates: memoryGateStore,
+    deliverables: memoryDeliverableStore,
+    acceptance: memoryAcceptanceRecordStore,
+  }),
+  sessionFor,
+  resetDb,
+);
 
 // Demo-store specifics: the audit trail lives in db().audit here (audit_log in Postgres).
 describe('memory repo — audit trail', () => {

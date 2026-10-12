@@ -1,7 +1,6 @@
 import type { Project, Session } from '../domain/types';
 import { canSeeProject, canSeeVisibility, isClientRole, isInternalRole } from '../domain/permissions';
 import {
-  closureError,
   computeSlaDue,
   deriveRaid,
   dueForEscalation,
@@ -9,16 +8,39 @@ import {
   type RaidEntry,
   type RaidView,
 } from '../domain/raid';
-import { escalationRecipients, type Notification, type NotificationKind } from '../domain/notifications';
+import { escalationRecipients, type Notification } from '../domain/notifications';
 import type { CreateRaidInput, RaidPatch } from '../raid-schemas';
 import { db } from './memory';
 import { newId } from './ids';
 import { ForbiddenError, NotFoundError, ValidationError } from './errors';
+import { checkShape } from './raid-rules';
+import { isPostgresEnabled } from './index';
+import { postgresRaidStore } from './raid-postgres';
+import {
+  notify,
+  listNotifications as notifyListNotifications,
+  markNotificationsRead as notifyMarkNotificationsRead,
+} from './notify';
 
 /**
- * RAID register repository (demo store). Mirrors the `raid_entries` / `raid_links` RLS:
- * clients read shared entries of their own org's projects; only internal users write.
+ * RAID register and notifications. `RaidStore` has two implementations, picked like getRepo():
+ * `memoryRaidStore` (demo store, below) and the Postgres + RLS store in raid-postgres.ts.
+ * Both mirror the `raid_entries` / `raid_links` RLS: clients read shared entries of their own
+ * org's projects; only internal users write. Shared behaviour: lib/data/contract-raid.ts.
  */
+export interface RaidStore {
+  listRaid(s: Session, f: { projectId?: string; itemId?: string }, now?: Date): Promise<RaidView[]>;
+  getRaid(s: Session, id: string, now?: Date): Promise<RaidView>;
+  createRaid(s: Session, input: CreateRaidInput, now?: Date): Promise<RaidView>;
+  updateRaid(s: Session, id: string, patch: RaidPatch, now?: Date): Promise<RaidView>;
+  /** RAID-02. `s` null = the system-wide cron run. */
+  escalateStaleIssues(
+    s: Session | null,
+    now?: Date,
+  ): Promise<{ escalated: string[]; notifications: Notification[] }>;
+  listNotifications(s: Session): Promise<Notification[]>;
+  markNotificationsRead(s: Session, ids?: string[], now?: Date): Promise<Notification[]>;
+}
 
 const iso = (d: Date) => d.toISOString();
 
@@ -63,28 +85,6 @@ function audit(s: Session, action: string, entityId: string, before?: unknown, a
   });
 }
 
-function notify(
-  userIds: string[],
-  projectId: string,
-  kind: NotificationKind,
-  title: string,
-  href: string,
-  now: Date,
-): Notification[] {
-  const out = userIds.map((userId) => ({
-    id: newId('nt'),
-    userId,
-    projectId,
-    kind,
-    title,
-    href,
-    createdAt: iso(now),
-    readAt: null,
-  }));
-  db().notifications.push(...out);
-  return out;
-}
-
 function checkLinks(s: Session, projectId: string, ids: string[] | undefined) {
   if (!ids) return;
   const d = db();
@@ -104,28 +104,19 @@ function checkPeople(input: { ownerId?: string | null; decidedBy?: string | null
     if (id && !d.profiles.some((p) => p.id === id)) throw new ValidationError('Unknown person.');
 }
 
-function checkShape(e: RaidEntry) {
-  if (e.kind === 'risk' && (!e.category || !e.probability || !e.impact))
-    throw new ValidationError('A risk needs a category, probability and impact.');
-  if (e.kind === 'issue' && !e.severity) throw new ValidationError('An issue needs a severity.');
-  if (e.kind === 'risk' && Boolean(e.residualProbability) !== Boolean(e.residualImpact))
-    throw new ValidationError('Set both residual probability and residual impact, or neither.');
-  const err = closureError(e.kind, e.status, e.closureNote);
-  if (err) throw new ValidationError(err);
-}
-
 function riskEscalatedNotice(p: Project, e: RaidEntry, now: Date) {
-  notify(
-    [p.leadId],
-    p.id,
-    'risk_escalated',
-    `Escalate to steering: ${e.title} (score ${(e.probability ?? 0) * (e.impact ?? 0)})`,
-    `/projects/${p.key}/raid?tab=risk`,
+  notify({
+    kind: 'risk_escalated',
+    projectId: p.id,
+    recipients: [p.leadId],
+    title: `Escalate to steering: ${e.title} (score ${(e.probability ?? 0) * (e.impact ?? 0)})`,
+    href: `/projects/${p.key}/raid?tab=risk`,
+    visibility: 'internal',
     now,
-  );
+  });
 }
 
-export async function listRaid(
+async function memListRaid(
   s: Session,
   f: { projectId?: string; itemId?: string },
   now: Date = new Date(),
@@ -155,15 +146,11 @@ export async function listRaid(
     .map((e) => view(s, e, now));
 }
 
-export async function getRaid(s: Session, id: string, now: Date = new Date()): Promise<RaidView> {
+async function memGetRaid(s: Session, id: string, now: Date = new Date()): Promise<RaidView> {
   return view(s, findVisible(s, id), now);
 }
 
-export async function createRaid(
-  s: Session,
-  input: CreateRaidInput,
-  now: Date = new Date(),
-): Promise<RaidView> {
+async function memCreateRaid(s: Session, input: CreateRaidInput, now: Date = new Date()): Promise<RaidView> {
   const p = visibleProject(s, input.projectId);
   if (!canEditRaid(s)) throw new ForbiddenError('Client users cannot change the RAID log.');
   checkLinks(s, p.id, input.linkedItemIds);
@@ -211,7 +198,7 @@ export async function createRaid(
   return view(s, e, now);
 }
 
-export async function updateRaid(
+async function memUpdateRaid(
   s: Session,
   id: string,
   patch: RaidPatch,
@@ -246,7 +233,7 @@ export async function updateRaid(
  * more than 10 days) that has not been escalated in the last 24 hours. With a session, only
  * that user's visible projects are scanned; the production cron runs it system-wide (session null).
  */
-export async function escalateStaleIssues(
+async function memEscalateStaleIssues(
   s: Session | null,
   now: Date = new Date(),
 ): Promise<{ escalated: string[]; notifications: Notification[] }> {
@@ -261,14 +248,15 @@ export async function escalateStaleIssues(
     for (const e of d.raid.filter((r) => r.projectId === p.id && dueForEscalation(r, now))) {
       const days = Math.floor((now.getTime() - new Date(e.updatedAt).getTime()) / 86_400_000);
       notifications.push(
-        ...notify(
-          escalationRecipients(p.leadId, admins),
-          p.id,
-          'sla_breach',
-          `Stale issue on ${p.key}: ${e.title} (no update in ${days} days)`,
-          `/projects/${p.key}/raid?tab=issue`,
+        ...notify({
+          kind: 'sla_breach',
+          projectId: p.id,
+          recipients: escalationRecipients(p.leadId, admins),
+          title: `Stale issue on ${p.key}: ${e.title} (no update in ${days} days)`,
+          href: `/projects/${p.key}/raid?tab=issue`,
+          visibility: 'internal',
           now,
-        ),
+        }),
       );
       e.escalatedAt = iso(now);
       escalated.push(e.id);
@@ -277,16 +265,29 @@ export async function escalateStaleIssues(
   return { escalated, notifications };
 }
 
-export async function listNotifications(s: Session): Promise<Notification[]> {
-  return db()
-    .notifications.filter((n) => n.userId === s.user.id)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .slice(0, 50);
-}
+/** The demo-store implementation. */
+export const memoryRaidStore: RaidStore = {
+  listRaid: memListRaid,
+  getRaid: memGetRaid,
+  createRaid: memCreateRaid,
+  updateRaid: memUpdateRaid,
+  escalateStaleIssues: memEscalateStaleIssues,
+  // The notification center lives in lib/data/notify.ts (Team Signal); the demo store delegates to it.
+  listNotifications: (s) => notifyListNotifications(s),
+  markNotificationsRead: (s, ids, now) => notifyMarkNotificationsRead(s, ids, now),
+};
 
-/** Marks the given notifications (or all of them) read for the current user only. */
-export async function markNotificationsRead(s: Session, ids?: string[], now: Date = new Date()) {
-  for (const n of db().notifications)
-    if (n.userId === s.user.id && !n.readAt && (!ids || ids.includes(n.id))) n.readAt = iso(now);
-  return listNotifications(s);
-}
+/** The active RAID store: Postgres + RLS when getRepo() would pick Postgres, else the demo store. */
+export const raidStore = (): RaidStore => (isPostgresEnabled() ? postgresRaidStore() : memoryRaidStore);
+
+// Public API used by route handlers and pages: each call goes to the active store.
+export const listRaid: RaidStore['listRaid'] = (...a) => raidStore().listRaid(...a);
+export const getRaid: RaidStore['getRaid'] = (...a) => raidStore().getRaid(...a);
+export const createRaid: RaidStore['createRaid'] = (...a) => raidStore().createRaid(...a);
+export const updateRaid: RaidStore['updateRaid'] = (...a) => raidStore().updateRaid(...a);
+export const escalateStaleIssues: RaidStore['escalateStaleIssues'] = (...a) =>
+  raidStore().escalateStaleIssues(...a);
+export const listNotifications: RaidStore['listNotifications'] = (...a) =>
+  raidStore().listNotifications(...a);
+export const markNotificationsRead: RaidStore['markNotificationsRead'] = (...a) =>
+  raidStore().markNotificationsRead(...a);

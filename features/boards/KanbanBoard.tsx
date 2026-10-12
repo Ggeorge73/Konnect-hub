@@ -49,6 +49,7 @@ import type { ItemStatus, ItemType, WorkItem } from '@/lib/domain/types';
 import { BoardCard } from './BoardCard';
 import { laneOf, positionAt, type Swimlane } from './ordering';
 import { EmptyState } from '@/components/ui/bits';
+import { useRealtime } from '@/features/realtime/useRealtime';
 
 const COLUMN_STEP = 292; // column width + gap
 
@@ -72,6 +73,7 @@ const HIDDEN_BY_DEFAULT: ItemType[] = ['epic', 'feature'];
 export function KanbanBoard() {
   const b = useProjectBundle();
   const { data: items, isLoading } = useItems(b.project.id);
+  useRealtime(b.project.id);
   const { data: people = [] } = usePeople();
   const { data: me } = useMe();
   const update = useUpdateItem(b.project.id);

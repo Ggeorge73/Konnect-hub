@@ -1,22 +1,14 @@
 'use client';
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import {
-  Badge,
-  Button,
-  Divider,
-  IconButton,
-  ListItemText,
-  Menu,
-  MenuItem,
-  Stack,
-  Tooltip,
-  Typography,
-} from '@mui/material';
+import { Badge, Box, Button, Divider, IconButton, Popover, Stack, Tooltip, Typography } from '@mui/material';
 import NotificationsNoneOutlined from '@mui/icons-material/NotificationsNoneOutlined';
-import { useMarkRead, useNotifications } from '@/features/raid/api';
+import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
+import { useMarkRead, useNotifications } from '@/features/notifications/api';
+import { NotificationList } from '@/features/notifications/NotificationList';
 
-/** Top-bar bell: unread badge and a simple list of in-app notifications. */
+/** Top-bar bell: unread badge and an inbox popover (newest 10), with the full list at /notifications. */
 export function NotificationsBell() {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const { data = [] } = useNotifications();
@@ -24,12 +16,13 @@ export function NotificationsBell() {
   const router = useRouter();
   const unread = data.filter((n) => !n.readAt).length;
   const label = unread ? `Notifications, ${unread} unread` : 'Notifications';
+  const close = () => setAnchor(null);
   return (
     <>
       <Tooltip title="Notifications">
         <IconButton
           aria-label={label}
-          aria-haspopup="menu"
+          aria-haspopup="dialog"
           aria-expanded={Boolean(anchor)}
           onClick={(e) => setAnchor(e.currentTarget)}
         >
@@ -42,13 +35,21 @@ export function NotificationsBell() {
           </Badge>
         </IconButton>
       </Tooltip>
-      <Menu
+      <Popover
         anchorEl={anchor}
         open={Boolean(anchor)}
-        onClose={() => setAnchor(null)}
-        slotProps={{ paper: { sx: { width: 360, maxWidth: '100vw', borderRadius: 3 } } }}
+        onClose={close}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        slotProps={{
+          paper: {
+            role: 'dialog',
+            'aria-label': 'Notifications',
+            sx: { width: 380, maxWidth: 'calc(100vw - 16px)', maxHeight: '75vh', borderRadius: 3 },
+          } as object,
+        }}
       >
-        <Stack direction="row" alignItems="center" sx={{ px: 2, py: 1 }}>
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ px: 2, py: 1 }}>
           <Typography fontWeight={700} sx={{ flex: 1 }}>
             Notifications
           </Typography>
@@ -57,31 +58,36 @@ export function NotificationsBell() {
               Mark all read
             </Button>
           )}
+          <Tooltip title="Notification settings">
+            <IconButton
+              size="small"
+              aria-label="Notification settings"
+              component={Link}
+              href="/settings/notifications"
+              onClick={close}
+            >
+              <SettingsOutlined fontSize="small" />
+            </IconButton>
+          </Tooltip>
         </Stack>
         <Divider />
-        {data.length === 0 && (
-          <MenuItem disabled>
-            <ListItemText primary="You're all caught up." />
-          </MenuItem>
-        )}
-        {data.slice(0, 15).map((n) => (
-          <MenuItem
-            key={n.id}
-            onClick={() => {
+        <Box sx={{ overflow: 'auto', maxHeight: 'calc(75vh - 110px)' }}>
+          <NotificationList
+            items={data.slice(0, 10)}
+            onOpen={(n) => {
               if (!n.readAt) markRead.mutate([n.id]);
-              setAnchor(null);
+              close();
               router.push(n.href);
             }}
-            sx={{ whiteSpace: 'normal', alignItems: 'flex-start' }}
-          >
-            <ListItemText
-              primary={n.title}
-              secondary={new Date(n.createdAt).toLocaleString()}
-              slotProps={{ primary: { fontWeight: n.readAt ? 400 : 700, fontSize: 14 } }}
-            />
-          </MenuItem>
-        ))}
-      </Menu>
+          />
+        </Box>
+        <Divider />
+        <Box sx={{ p: 1, textAlign: 'center' }}>
+          <Button component={Link} href="/notifications" onClick={close} fullWidth>
+            View all notifications
+          </Button>
+        </Box>
+      </Popover>
     </>
   );
 }

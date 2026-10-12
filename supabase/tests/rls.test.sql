@@ -764,5 +764,288 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 13. Insight: executive dashboard RAG override, budget sharing, EV weights (0006_insight_dashboard.sql).
+-- ===========================================================================
+begin;
+do $$
+declare who text;
+begin
+  -- A RAG change needs a reason; the Lead's override is audited with before/after.
+  perform tests.as_user('lead');
+  perform tests.throws(format('update public.projects set rag = ''red'', rag_reason = '' '' where id = %L', tests.ehr()),
+                       'RAG override without a reason');
+  update public.projects set rag = 'red', rag_reason = '  UAT slipped a week ' where id = tests.ehr();
+  perform tests.ok((select rag = 'red' and rag_reason = 'UAT slipped a week' from public.projects where id = tests.ehr()),
+                   'lead overrides RAG (reason trimmed)');
+  perform tests.as_owner();
+  perform tests.eq((select count(*) from public.audit_log where action = 'project.rag_override'
+                    and entity_id = tests.ehr()::text and actor_id = tests.uid('lead')
+                    and after ->> 'rag' = 'red' and before ->> 'rag' is not null), 1, 'RAG override audited');
+
+  -- Only managers change it: RLS silently filters everyone else.
+  foreach who in array array['team', 'dev', 'assoc', 'sponsor', 'cmember'] loop
+    perform tests.as_user(who);
+    update public.projects set rag = 'green', rag_reason = 'x', share_budget = true where id = tests.ehr();
+  end loop;
+  perform tests.as_owner();
+  perform tests.ok((select rag = 'red' and not share_budget from public.projects where id = tests.ehr()),
+                   'non-managers cannot change RAG or budget sharing');
+  perform tests.eq((select count(*) from public.audit_log where action in ('project.rag_override', 'dashboard.share_budget')
+                    and entity_id = tests.ehr()::text), 1, 'no audit rows from blocked updates');
+
+  -- Budget stays hidden from clients until the Lead shares it; then only that org's clients see it.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('project_financials'), 0, 'sponsor reads budget before sharing');
+  perform tests.as_user('lead');
+  update public.projects set share_budget = true where id = tests.ehr();
+  perform tests.as_owner();
+  perform tests.eq((select count(*) from public.audit_log where action = 'dashboard.share_budget'
+                    and entity_id = tests.ehr()::text and after ->> 'shareBudget' = 'true'), 1, 'budget sharing audited');
+  foreach who in array array['sponsor', 'cmember', 'cviewer'] loop
+    perform tests.as_user(who);
+    perform tests.eq(tests.count('project_financials', format('project_id = %L', tests.ehr())), 1,
+                     who || ' reads shared EHR budget');
+    perform tests.eq(tests.count('project_financials'), 1, who || ' reads only the shared project budget');
+  end loop;
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('insert into public.project_financials values (%L, 1)', tests.psr()),
+                       'client writes financials after sharing');
+  update public.project_financials set bac = 1 where project_id = tests.ehr();
+  perform tests.as_owner();
+  perform tests.ok((select bac > 1 from public.project_financials where project_id = tests.ehr()),
+                   'client cannot change a shared budget');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('project_financials'), 0, 'other client reads shared budget');
+  foreach who in array array['team', 'dev', 'assoc'] loop
+    perform tests.as_user(who);
+    perform tests.eq(tests.count('project_financials'), 0, who || ' reads budget because it is shared');
+  end loop;
+  perform tests.ok(not has_function_privilege('anon', 'public.can_see_shared_budget(uuid)', 'execute'),
+                   'anon cannot execute can_see_shared_budget');
+
+  -- EV weights are positive when set.
+  perform tests.as_user('lead');
+  update public.deliverables set ev_weight = 25 where id = md5('dl_ehr_1')::uuid;
+  perform tests.ok((select ev_weight = 25 from public.deliverables where id = md5('dl_ehr_1')::uuid), 'lead sets EV weight');
+  perform tests.throws(format('update public.deliverables set ev_weight = 0 where id = %L', md5('dl_ehr_1')::uuid),
+                       'zero EV weight');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 16. Shield: mark_mfa_enabled() and record_reauth() (0009_shield_reauth_mfa.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_cm uuid := tests.uid('cmember');
+  v_cv uuid := tests.uid('cviewer');
+begin
+  -- A signed-in user at aal1 cannot flag MFA; the flag is unchanged.
+  perform tests.as_user('cmember');
+  perform tests.throws('select public.mark_mfa_enabled()', 'mark MFA without aal2');
+  perform set_config('request.jwt.claims', json_build_object('sub', v_cm, 'aal', 'aal1')::text, true);
+  perform tests.throws('select public.mark_mfa_enabled()', 'mark MFA at aal1');
+  -- Users still cannot set the flag directly (profiles_guard), even on their own row.
+  perform tests.throws(format('update public.profiles set mfa_enabled = true where id = %L', v_cm),
+                       'direct update of own mfa_enabled');
+  perform tests.as_owner();
+  perform tests.ok((select not mfa_enabled from public.profiles where id = v_cm), 'flag unchanged before aal2');
+
+  -- At aal2 it flips the caller's own row only, and is idempotent.
+  perform tests.as_user('cmember');
+  perform set_config('request.jwt.claims', json_build_object('sub', v_cm, 'aal', 'aal2')::text, true);
+  perform tests.ok(public.mark_mfa_enabled(), 'mark MFA at aal2 returns true');
+  perform tests.ok(public.mark_mfa_enabled(), 'mark MFA is idempotent');
+  perform tests.as_owner();
+  perform tests.ok((select mfa_enabled from public.profiles where id = v_cm), 'caller flagged');
+  perform tests.ok((select not mfa_enabled from public.profiles where id = v_cv), 'other users untouched');
+  perform tests.eq((select count(*) from public.profiles where mfa_enabled and role::text like 'client%'), 1,
+                   'exactly one client row changed');
+  perform tests.eq((select count(*) from public.audit_log where action = 'profile.mfa_enabled'
+                    and entity_id = v_cm::text and actor_id = v_cm), 1, 'MFA enrolment audited once');
+  -- A claims sub for another user cannot redirect it: auth.uid() is the caller.
+  perform tests.as_user('cviewer');
+  perform set_config('request.jwt.claims', json_build_object('sub', v_cm, 'aal', 'aal2')::text, true);
+  perform public.mark_mfa_enabled();
+  perform tests.as_owner();
+  perform tests.ok((select mfa_enabled from public.profiles where id = v_cv), 'viewer flagged only themselves');
+  perform tests.ok(not has_function_privilege('anon', 'public.mark_mfa_enabled()', 'execute'),
+                   'anon cannot execute mark_mfa_enabled');
+
+  -- record_reauth: server-only. Signed-in users cannot record a re-auth for themselves or others.
+  perform tests.ok(not has_function_privilege('authenticated', 'public.record_reauth(uuid, timestamptz)', 'execute'),
+                   'authenticated cannot execute record_reauth');
+  perform tests.ok(not has_function_privilege('anon', 'public.record_reauth(uuid, timestamptz)', 'execute'),
+                   'anon cannot execute record_reauth');
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.record_reauth(%L, now())', tests.uid('sponsor')),
+                       'sponsor records own re-auth');
+  perform tests.ok(not public.has_fresh_reauth(), 'no fresh re-auth for the sponsor');
+  -- The server (owner role) records a fresh one; stale or future times are ignored.
+  perform tests.as_owner();
+  perform tests.ok(not public.record_reauth(tests.uid('sponsor'), now() - interval '16 minutes'), 'stale re-auth ignored');
+  perform tests.ok(not public.record_reauth(tests.uid('sponsor'), now() + interval '5 minutes'), 'future re-auth ignored');
+  perform tests.ok(public.record_reauth(tests.uid('sponsor'), now()), 'fresh re-auth recorded');
+  perform tests.ok(public.record_reauth(tests.uid('sponsor'), now()), 'same re-auth recorded twice');
+  perform tests.eq((select count(*) from public.reauth_events where user_id = tests.uid('sponsor')), 1,
+                   're-auth deduplicated');
+  perform tests.as_user('sponsor');
+  perform tests.ok(public.has_fresh_reauth(), 'sponsor has a fresh re-auth');
+  perform tests.as_user('cmember');
+  perform tests.ok(not public.has_fresh_reauth(), 'a re-auth is per user');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 14. Pulse: status history and weekly status reports (0007_pulse.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_item uuid := tests.item('EHR-8');
+  v_rep uuid;
+begin
+  -- Every status change is recorded by the trigger; history is internal-only and cannot be forged.
+  perform tests.as_user('dev');
+  update public.work_items set status = 'in_review' where id = v_item;
+  perform tests.eq(tests.count('status_history', format(
+    $q$item_id = %L and from_status = 'ready' and to_status = 'in_review' and changed_by = %L$q$,
+    v_item, tests.uid('dev'))), 1, 'status change recorded with actor');
+  update public.work_items set title = title || ' (renamed)' where id = v_item;
+  perform tests.eq(tests.count('status_history', format('item_id = %L', v_item)), 1, 'non-status edit not recorded');
+  perform tests.throws(format($q$insert into public.status_history (project_id, item_id, to_status)
+                                 values (%L, %L, 'done')$q$, tests.ehr(), v_item), 'forge status history');
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('status_history'), 0, 'client sees status history');
+
+  -- Team members draft; only the project Lead or an Admin publishes.
+  perform tests.as_user('team');
+  insert into public.status_reports (project_id, period_start, period_end, rag, author_id)
+  values (tests.ehr(), '2026-10-12', '2026-10-16', 'amber', tests.uid('team')) returning id into v_rep;
+  insert into public.status_report_drafts (report_id, project_id, sections)
+  values (v_rep, tests.ehr(), '{"scope": "<p>Draft</p>"}');
+  perform tests.ok((select status = 'draft' and week_start = '2026-10-12' from public.status_reports where id = v_rep),
+                   'draft for the week of Oct 12');
+  perform tests.throws(format($q$insert into public.status_reports (project_id, period_start, period_end, rag, author_id)
+                                 values (%L, '2026-10-14', '2026-10-16', 'green', %L)$q$, tests.ehr(), tests.uid('team')),
+                       'second report for the same week');
+  perform tests.throws(format($q$update public.status_reports set visibility = 'shared' where id = %L$q$, v_rep),
+                       'team member publishes');
+  perform tests.throws(format($q$update public.status_reports set published_at = now() where id = %L$q$, v_rep),
+                       'team member sets published_at');
+  perform tests.throws(format($q$insert into public.status_reports (project_id, period_start, period_end, rag, author_id,
+                                 visibility) values (%L, '2026-10-19', '2026-10-23', 'green', %L, 'shared')$q$,
+                              tests.ehr(), tests.uid('team')), 'team member inserts a published report');
+  perform tests.throws(format($q$insert into public.status_report_budgets (report_id, project_id, html)
+                                 values (%L, %L, 'x')$q$, v_rep, tests.ehr()), 'team member writes the budget');
+
+  -- Clients never see drafts or the internal working copy.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('status_reports', format('id = %L', v_rep)), 0, 'client sees a draft');
+  perform tests.eq(tests.count('status_report_drafts'), 0, 'client sees working copies');
+
+  -- The Lead publishes: shared, stamped, audited, and every client user of the org notified.
+  perform tests.as_user('lead');
+  insert into public.status_report_budgets (report_id, project_id, html) values (v_rep, tests.ehr(), '<p>$480,000</p>');
+  update public.status_reports set published_at = now(), sections = '{"scope": "<p>Client copy</p>"}' where id = v_rep;
+  perform tests.ok((select visibility = 'shared' and status = 'published' and published_by = tests.uid('lead')
+                    from public.status_reports where id = v_rep), 'published report is shared and stamped');
+  perform tests.as_owner();
+  perform tests.eq((select count(*) from public.notifications where kind = 'status_report_published'
+                    and link = format('/portal/EHR/reports/%s', v_rep)), 3, 'every Peachtree client user notified');
+  perform tests.eq((select count(*) from public.audit_log where action = 'status_report.publish'
+                    and entity_id = v_rep::text and actor_id = tests.uid('lead')), 1, 'publish audited');
+
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('status_reports', format('id = %L', v_rep)), 1, 'sponsor sees the published report');
+  perform tests.eq(tests.count('status_report_budgets'), 0, 'sponsor sees the unshared budget');
+  perform tests.eq(tests.count('status_report_drafts'), 0, 'sponsor sees the internal working copy');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('status_reports', format('id = %L', v_rep)), 0, 'other client sees the report');
+  perform tests.as_user('team');
+  perform tests.eq(tests.count('status_report_budgets'), 0, 'team member sees the budget');
+  perform tests.throws(format($q$update public.status_reports set rag = 'red' where id = %L$q$, v_rep),
+                       'team member edits a published report');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 15. Signal: item watchers, per-kind notification channels and client-safe notifications
+--     (0008_signal.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_internal uuid;
+  v_shared uuid;
+begin
+  perform tests.as_owner();
+  select id into v_internal from public.work_items
+   where project_id = tests.ehr() and visibility = 'internal' and deleted_at is null order by number limit 1;
+  select id into v_shared from public.work_items
+   where project_id = tests.ehr() and visibility = 'shared' and deleted_at is null order by number limit 1;
+  perform tests.ok(v_internal is not null and v_shared is not null, 'seed has internal and shared EHR items');
+
+  -- Watching: anyone who can see an item may watch it; clients only shared items of their org.
+  perform tests.as_user('sponsor');
+  insert into public.item_watchers (item_id, user_id) values (v_shared, tests.uid('sponsor'));
+  perform tests.eq(tests.count('item_watchers', format('item_id = %L', v_shared)), 1, 'sponsor watches a shared item');
+  perform tests.throws(format('insert into public.item_watchers (item_id, user_id) values (%L, %L)',
+                              v_internal, tests.uid('sponsor')), 'client watches an internal item');
+  perform tests.throws(format('insert into public.item_watchers (item_id, user_id) values (%L, %L)',
+                              v_shared, tests.uid('cmember')), 'client subscribes someone else');
+  perform tests.throws(format('insert into public.item_watchers (item_id, user_id) values (%L, %L)',
+                              tests.item('RVB-2'), tests.uid('sponsor')), 'client watches another org''s item');
+
+  -- Internal staff auto-watch colleagues (the assignee), but never a client on an internal item.
+  perform tests.as_user('lead');
+  insert into public.item_watchers (item_id, user_id) values (v_internal, tests.uid('dev'));
+  perform tests.throws(format('insert into public.item_watchers (item_id, user_id) values (%L, %L)',
+                              v_internal, tests.uid('sponsor')), 'lead subscribes a client to an internal item');
+  perform tests.ok(tests.count('item_watchers', format('item_id = %L', v_shared)) >= 1, 'staff see watchers');
+
+  -- Clients only ever see their own watch rows, and nothing on internal items.
+  perform tests.as_user('cmember');
+  perform tests.eq(tests.count('item_watchers'), 0, 'client member sees other people''s watches');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('item_watchers'), 0, 'other org sees Peachtree watchers');
+  perform tests.as_user('dev');
+  update public.item_watchers set watching = false where item_id = v_internal and user_id = tests.uid('dev');
+  perform tests.ok((select not watching from public.item_watchers where item_id = v_internal
+                    and user_id = tests.uid('dev')), 'unwatch keeps an explicit row');
+  update public.item_watchers set watching = false where user_id = tests.uid('sponsor');
+  perform tests.as_owner();
+  perform tests.ok((select watching from public.item_watchers where item_id = v_shared
+                    and user_id = tests.uid('sponsor')), 'nobody edits someone else''s watch');
+
+  -- Channel preferences are personal and validated.
+  perform tests.as_user('sponsor');
+  insert into public.notification_channel_prefs (user_id, kind, channel)
+  values (tests.uid('sponsor'), 'gate_requested', 'email');
+  perform tests.throws(format('insert into public.notification_channel_prefs (user_id, kind, channel) values (%L, ''mention'', ''off'')',
+                              tests.uid('lead')), 'set another user''s preference');
+  perform tests.throws(format('insert into public.notification_channel_prefs (user_id, kind, channel) values (%L, ''mention'', ''pager'')',
+                              tests.uid('sponsor')), 'unknown channel');
+  perform tests.as_user('lead');
+  perform tests.eq(tests.count('notification_channel_prefs'), 0, 'lead sees the sponsor''s preferences');
+
+  -- Client safety: internal notifications (and internal-only kinds) never reach a client.
+  perform tests.throws(format('insert into public.notifications (user_id, project_id, kind, title, visibility) values (%L, %L, ''mention'', ''x'', ''internal'')',
+                              tests.uid('sponsor'), tests.ehr()), 'internal mention to a client');
+  perform tests.throws(format('insert into public.notifications (user_id, project_id, kind, title, visibility) values (%L, %L, ''risk_escalated'', ''x'', ''shared'')',
+                              tests.uid('sponsor'), tests.ehr()), 'risk escalation to a client');
+  insert into public.notifications (user_id, project_id, kind, title, visibility)
+  values (tests.uid('sponsor'), tests.ehr(), 'gate_requested', 'Gate 3 ready for approval', 'shared');
+  insert into public.notifications (user_id, project_id, kind, title, visibility)
+  values (tests.uid('dev'), tests.ehr(), 'mention', 'Lara mentioned you', 'internal');
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('notifications', 'kind = ''gate_requested'''), 1, 'sponsor gets the shared notification');
+  perform tests.throws(format('update public.notifications set visibility = ''internal'' where user_id = %L',
+                              tests.uid('sponsor')), 'client notification flipped to internal');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;
