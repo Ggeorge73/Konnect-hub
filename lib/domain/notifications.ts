@@ -1,5 +1,5 @@
 /** In-app notifications (CLAUDE.md 3.10). Email delivery and preferences come later. */
-export type NotificationKind = 'sla_breach' | 'risk_escalated';
+export type NotificationKind = 'sla_breach' | 'risk_escalated' | 'status_report_published';
 
 export interface Notification {
   id: string;

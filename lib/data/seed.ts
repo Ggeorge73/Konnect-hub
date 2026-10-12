@@ -23,8 +23,9 @@ import type { GateReview } from '../domain/gates';
 import type { Deliverable } from '../domain/deliverables';
 import { seedGates } from './seed-gates';
 import { seedInsight, type InsightState } from './seed-insight';
+import { seedPulse, type PulseDb } from './seed-pulse';
 
-export interface Db {
+export interface Db extends PulseDb {
   orgs: Organization[];
   profiles: Profile[];
   projects: Project[];
@@ -642,5 +643,6 @@ export function buildSeed(): Db {
     planning: seedPlanning(),
     ...seedGates(),
     ...seedInsight(),
+    ...seedPulse(),
   };
 }

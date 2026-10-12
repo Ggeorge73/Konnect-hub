@@ -336,4 +336,21 @@ insert into public.deliverable_criteria (id, project_id, deliverable_id, text, p
   (md5('dlc_rvb_1_1')::uuid, 'c0000000-0000-4000-8000-000000000002', md5('dl_rvb_1')::uuid,
    'Applicants can complete intake end to end', 1);
 
+-- Pulse: status history and report working copies (0007_pulse.sql; mirrors lib/data/seed-pulse.ts) --
+insert into public.status_history (project_id, item_id, from_status, to_status, changed_by, at) values
+  ('c0000000-0000-4000-8000-000000000001', md5('wi_ehr_6')::uuid, 'in_review', 'done',
+   'b0000000-0000-4000-8000-000000000004', '2026-10-01T15:00:00Z'),
+  ('c0000000-0000-4000-8000-000000000001', md5('wi_ehr_7')::uuid, 'ready', 'in_progress',
+   'b0000000-0000-4000-8000-000000000004', '2026-09-24T15:00:00Z'),
+  ('c0000000-0000-4000-8000-000000000002', md5('wi_rvb_3')::uuid, 'ready', 'in_progress',
+   'b0000000-0000-4000-8000-000000000004', '2026-10-06T12:00:00Z');
+update public.status_reports set rag_reason = summary;
+insert into public.status_report_drafts (report_id, project_id, sections) values
+  (md5('sr_ehr_1')::uuid, 'c0000000-0000-4000-8000-000000000001', '{"scope": "<p>Mapping complete.</p>"}'),
+  (md5('sr_ehr_2')::uuid, 'c0000000-0000-4000-8000-000000000001', '{"scope": "<p>Draft: two-day slip likely.</p>"}'),
+  (md5('sr_rvb_1')::uuid, 'c0000000-0000-4000-8000-000000000002', '{"scope": "<p>Intake prototype on track.</p>"}');
+insert into public.status_report_budgets (report_id, project_id, html) values
+  (md5('sr_ehr_1')::uuid, 'c0000000-0000-4000-8000-000000000001', '<p>Budget at completion: $480,000 (fixed fee).</p>'),
+  (md5('sr_rvb_1')::uuid, 'c0000000-0000-4000-8000-000000000002', '<p>Budget at completion: $310,000 (time and materials).</p>');
+
 commit;

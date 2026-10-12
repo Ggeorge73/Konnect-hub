@@ -21,16 +21,20 @@ import { ItemPanel } from '@/features/items/ItemPanel';
 import { ProjectBundleProvider } from '@/features/projects/ProjectFrame';
 import { SharedRaid } from '@/features/raid/SharedRaid';
 import type { RaidView } from '@/lib/domain/raid';
+import { PortalReportsSection } from '@/features/reports/PortalReports';
+import type { ReportSummary } from '@/lib/data/reports';
 
 export function PortalProject({
   bundle,
   items,
   raid = [],
+  reports = [],
   children,
 }: {
   bundle: ProjectBundle;
   items: WorkItem[];
   raid?: RaidView[];
+  reports?: ReportSummary[];
   children?: React.ReactNode;
 }) {
   const path = usePathname();
@@ -77,6 +81,7 @@ export function PortalProject({
           )}
         </Paper>
         <SharedRaid entries={raid} />
+        <PortalReportsSection projectKey={bundle.project.key} reports={reports} />
       </Stack>
       <Suspense fallback={null}>
         <ItemPanel projectId={bundle.project.id} />

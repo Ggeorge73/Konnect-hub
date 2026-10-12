@@ -898,5 +898,78 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 14. Pulse: status history and weekly status reports (0007_pulse.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_item uuid := tests.item('EHR-8');
+  v_rep uuid;
+begin
+  -- Every status change is recorded by the trigger; history is internal-only and cannot be forged.
+  perform tests.as_user('dev');
+  update public.work_items set status = 'in_review' where id = v_item;
+  perform tests.eq(tests.count('status_history', format(
+    $q$item_id = %L and from_status = 'ready' and to_status = 'in_review' and changed_by = %L$q$,
+    v_item, tests.uid('dev'))), 1, 'status change recorded with actor');
+  update public.work_items set title = title || ' (renamed)' where id = v_item;
+  perform tests.eq(tests.count('status_history', format('item_id = %L', v_item)), 1, 'non-status edit not recorded');
+  perform tests.throws(format($q$insert into public.status_history (project_id, item_id, to_status)
+                                 values (%L, %L, 'done')$q$, tests.ehr(), v_item), 'forge status history');
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('status_history'), 0, 'client sees status history');
+
+  -- Team members draft; only the project Lead or an Admin publishes.
+  perform tests.as_user('team');
+  insert into public.status_reports (project_id, period_start, period_end, rag, author_id)
+  values (tests.ehr(), '2026-10-12', '2026-10-16', 'amber', tests.uid('team')) returning id into v_rep;
+  insert into public.status_report_drafts (report_id, project_id, sections)
+  values (v_rep, tests.ehr(), '{"scope": "<p>Draft</p>"}');
+  perform tests.ok((select status = 'draft' and week_start = '2026-10-12' from public.status_reports where id = v_rep),
+                   'draft for the week of Oct 12');
+  perform tests.throws(format($q$insert into public.status_reports (project_id, period_start, period_end, rag, author_id)
+                                 values (%L, '2026-10-14', '2026-10-16', 'green', %L)$q$, tests.ehr(), tests.uid('team')),
+                       'second report for the same week');
+  perform tests.throws(format($q$update public.status_reports set visibility = 'shared' where id = %L$q$, v_rep),
+                       'team member publishes');
+  perform tests.throws(format($q$update public.status_reports set published_at = now() where id = %L$q$, v_rep),
+                       'team member sets published_at');
+  perform tests.throws(format($q$insert into public.status_reports (project_id, period_start, period_end, rag, author_id,
+                                 visibility) values (%L, '2026-10-19', '2026-10-23', 'green', %L, 'shared')$q$,
+                              tests.ehr(), tests.uid('team')), 'team member inserts a published report');
+  perform tests.throws(format($q$insert into public.status_report_budgets (report_id, project_id, html)
+                                 values (%L, %L, 'x')$q$, v_rep, tests.ehr()), 'team member writes the budget');
+
+  -- Clients never see drafts or the internal working copy.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('status_reports', format('id = %L', v_rep)), 0, 'client sees a draft');
+  perform tests.eq(tests.count('status_report_drafts'), 0, 'client sees working copies');
+
+  -- The Lead publishes: shared, stamped, audited, and every client user of the org notified.
+  perform tests.as_user('lead');
+  insert into public.status_report_budgets (report_id, project_id, html) values (v_rep, tests.ehr(), '<p>$480,000</p>');
+  update public.status_reports set published_at = now(), sections = '{"scope": "<p>Client copy</p>"}' where id = v_rep;
+  perform tests.ok((select visibility = 'shared' and status = 'published' and published_by = tests.uid('lead')
+                    from public.status_reports where id = v_rep), 'published report is shared and stamped');
+  perform tests.as_owner();
+  perform tests.eq((select count(*) from public.notifications where kind = 'status_report_published'
+                    and link = format('/portal/EHR/reports/%s', v_rep)), 3, 'every Peachtree client user notified');
+  perform tests.eq((select count(*) from public.audit_log where action = 'status_report.publish'
+                    and entity_id = v_rep::text and actor_id = tests.uid('lead')), 1, 'publish audited');
+
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('status_reports', format('id = %L', v_rep)), 1, 'sponsor sees the published report');
+  perform tests.eq(tests.count('status_report_budgets'), 0, 'sponsor sees the unshared budget');
+  perform tests.eq(tests.count('status_report_drafts'), 0, 'sponsor sees the internal working copy');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('status_reports', format('id = %L', v_rep)), 0, 'other client sees the report');
+  perform tests.as_user('team');
+  perform tests.eq(tests.count('status_report_budgets'), 0, 'team member sees the budget');
+  perform tests.throws(format($q$update public.status_reports set rag = 'red' where id = %L$q$, v_rep),
+                       'team member edits a published report');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;

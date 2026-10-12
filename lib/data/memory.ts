@@ -16,6 +16,7 @@ import {
 } from '../domain/permissions';
 import { canTransition, STATUS_LABEL } from '../domain/workflow';
 import { GATE_NAMES } from '../domain/templates';
+import { recordStatusChange } from './pulse-history';
 
 const g = globalThis as unknown as { __khDb?: Db };
 export const db = (): Db => (g.__khDb ??= buildSeed());
@@ -312,6 +313,8 @@ export const memoryRepo: Repo = {
     const before = { ...item };
     Object.assign(item, fields, { updatedAt: now() });
     if (fields.status && fields.status !== before.status) {
+      // Team Pulse (AGL-01): keep status history for agile metrics.
+      recordStatusChange(d, item, before.status, s.user.id, item.updatedAt);
       log(
         s,
         item.projectId,

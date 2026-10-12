@@ -24,6 +24,7 @@ const TABS = [
   { label: 'Backlog', seg: 'backlog' },
   { label: 'List', seg: 'list' },
   { label: 'Timeline', seg: 'timeline' },
+  { label: 'Metrics', seg: 'metrics' },
   { label: 'RAID', seg: 'raid' },
   { label: 'Gates', seg: 'gates' },
   { label: 'Deliverables', seg: 'deliverables' },
