@@ -1,6 +1,6 @@
 # Konnect ART — engineering brief for feature teams
 
-Read `CLAUDE-BUILD-SPEC.md`-equivalent context below, then the code. Match existing style exactly.
+Read `CLAUDE.md` (the product spec) and this brief, then the code. Match existing style exactly.
 
 ## Architecture (must follow)
 - Next.js 15 App Router + TS strict + MUI v6 (use `@mui/material/Grid2` for grids) + TanStack Query + dnd-kit + zod + Tiptap.

@@ -4,3 +4,4 @@ package-lock.json
 playwright-report
 test-results
 supabase/migrations
+CLAUDE.md
