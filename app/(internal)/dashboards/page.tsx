@@ -1,11 +1,14 @@
-import { ComingSoon } from '@/components/ui/ComingSoon';
+import { redirect } from 'next/navigation';
+import { getSession } from '@/lib/session';
+import { canSeePortfolio } from '@/lib/domain/dashboard';
+import { PortfolioDashboard } from '@/features/insight/PortfolioDashboard';
+
+export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Dashboards' };
-export default function Page() {
-  return (
-    <ComingSoon
-      title="Dashboards"
-      sprint="PI-1 Sprint 3"
-      body="Executive one-pager, earned value, Agile metrics and the portfolio dashboard."
-    />
-  );
+
+/** DASH-02 portfolio dashboard. Internal only: Associates (and clients, via the layout) are redirected. */
+export default async function Page() {
+  const s = await getSession();
+  if (!canSeePortfolio(s.user)) redirect('/?denied=dashboards');
+  return <PortfolioDashboard />;
 }

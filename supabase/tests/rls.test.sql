@@ -764,5 +764,74 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 13. Insight: executive dashboard RAG override, budget sharing, EV weights (0006_insight_dashboard.sql).
+-- ===========================================================================
+begin;
+do $$
+declare who text;
+begin
+  -- A RAG change needs a reason; the Lead's override is audited with before/after.
+  perform tests.as_user('lead');
+  perform tests.throws(format('update public.projects set rag = ''red'', rag_reason = '' '' where id = %L', tests.ehr()),
+                       'RAG override without a reason');
+  update public.projects set rag = 'red', rag_reason = '  UAT slipped a week ' where id = tests.ehr();
+  perform tests.ok((select rag = 'red' and rag_reason = 'UAT slipped a week' from public.projects where id = tests.ehr()),
+                   'lead overrides RAG (reason trimmed)');
+  perform tests.as_owner();
+  perform tests.eq((select count(*) from public.audit_log where action = 'project.rag_override'
+                    and entity_id = tests.ehr()::text and actor_id = tests.uid('lead')
+                    and after ->> 'rag' = 'red' and before ->> 'rag' is not null), 1, 'RAG override audited');
+
+  -- Only managers change it: RLS silently filters everyone else.
+  foreach who in array array['team', 'dev', 'assoc', 'sponsor', 'cmember'] loop
+    perform tests.as_user(who);
+    update public.projects set rag = 'green', rag_reason = 'x', share_budget = true where id = tests.ehr();
+  end loop;
+  perform tests.as_owner();
+  perform tests.ok((select rag = 'red' and not share_budget from public.projects where id = tests.ehr()),
+                   'non-managers cannot change RAG or budget sharing');
+  perform tests.eq((select count(*) from public.audit_log where action in ('project.rag_override', 'dashboard.share_budget')
+                    and entity_id = tests.ehr()::text), 1, 'no audit rows from blocked updates');
+
+  -- Budget stays hidden from clients until the Lead shares it; then only that org's clients see it.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('project_financials'), 0, 'sponsor reads budget before sharing');
+  perform tests.as_user('lead');
+  update public.projects set share_budget = true where id = tests.ehr();
+  perform tests.as_owner();
+  perform tests.eq((select count(*) from public.audit_log where action = 'dashboard.share_budget'
+                    and entity_id = tests.ehr()::text and after ->> 'shareBudget' = 'true'), 1, 'budget sharing audited');
+  foreach who in array array['sponsor', 'cmember', 'cviewer'] loop
+    perform tests.as_user(who);
+    perform tests.eq(tests.count('project_financials', format('project_id = %L', tests.ehr())), 1,
+                     who || ' reads shared EHR budget');
+    perform tests.eq(tests.count('project_financials'), 1, who || ' reads only the shared project budget');
+  end loop;
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('insert into public.project_financials values (%L, 1)', tests.psr()),
+                       'client writes financials after sharing');
+  update public.project_financials set bac = 1 where project_id = tests.ehr();
+  perform tests.as_owner();
+  perform tests.ok((select bac > 1 from public.project_financials where project_id = tests.ehr()),
+                   'client cannot change a shared budget');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('project_financials'), 0, 'other client reads shared budget');
+  foreach who in array array['team', 'dev', 'assoc'] loop
+    perform tests.as_user(who);
+    perform tests.eq(tests.count('project_financials'), 0, who || ' reads budget because it is shared');
+  end loop;
+  perform tests.ok(not has_function_privilege('anon', 'public.can_see_shared_budget(uuid)', 'execute'),
+                   'anon cannot execute can_see_shared_budget');
+
+  -- EV weights are positive when set.
+  perform tests.as_user('lead');
+  update public.deliverables set ev_weight = 25 where id = md5('dl_ehr_1')::uuid;
+  perform tests.ok((select ev_weight = 25 from public.deliverables where id = md5('dl_ehr_1')::uuid), 'lead sets EV weight');
+  perform tests.throws(format('update public.deliverables set ev_weight = 0 where id = %L', md5('dl_ehr_1')::uuid),
+                       'zero EV weight');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;
