@@ -6,6 +6,7 @@ import { canDecideDeliverable } from '@/lib/domain/deliverables';
 import { PortalProject } from '@/features/portal/PortalProject';
 import { listRaid } from '@/lib/data/raid';
 import { PortalGatesSection } from '@/features/gates/PortalGatesSection';
+import { PortalDashboardLink } from '@/features/insight/PortalDashboardLink';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +23,7 @@ export default async function Page({ params }: { params: Promise<{ key: string }
   ]);
   return (
     <PortalProject bundle={bundle} items={items} raid={raid}>
+      <PortalDashboardLink projectKey={bundle.project.key} />
       <PortalGatesSection
         projectKey={bundle.project.key}
         gates={gates}
