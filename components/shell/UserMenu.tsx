@@ -1,5 +1,6 @@
 'use client';
 import { useState } from 'react';
+import Link from 'next/link';
 import { Avatar, Box, ButtonBase, Divider, ListSubheader, Menu, MenuItem, Typography } from '@mui/material';
 import LogoutIcon from '@mui/icons-material/Logout';
 import { useQueryClient } from '@tanstack/react-query';
@@ -57,6 +58,10 @@ export function UserMenu({ collapsed }: { collapsed: boolean }) {
         )}
       </ButtonBase>
       <Menu anchorEl={anchor} open={Boolean(anchor)} onClose={() => setAnchor(null)}>
+        <MenuItem component={Link} href="/settings/notifications" onClick={() => setAnchor(null)}>
+          Notification settings
+        </MenuItem>
+        <Divider />
         {demo
           ? [
               <ListSubheader key="h">Demo mode — view as</ListSubheader>,

@@ -23,6 +23,7 @@ import { isPostgresEnabled } from './index';
 import { postgresGateStore } from './gates-postgres';
 import { newId } from './ids';
 import { ForbiddenError, NotFoundError, ReauthRequiredError, ValidationError } from './errors';
+import { onGateDecided, onGateRequested } from './notify';
 
 export { ReauthRequiredError };
 
@@ -310,6 +311,7 @@ async function memRequestReview(s: Session, key: string, input: RequestReviewInp
       budgetShared: review.budgetShared,
     },
   );
+  onGateRequested(s, project, review, phase.name);
   return redactReview(s.user, review);
 }
 
@@ -422,6 +424,7 @@ async function memDecideGate(s: Session, reviewId: string, input: DecisionInput,
     },
     ctx.ip,
   );
+  onGateDecided(s, project, review, phase.name);
   return redactReview(s.user, review);
 }
 

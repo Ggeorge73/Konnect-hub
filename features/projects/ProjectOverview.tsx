@@ -6,6 +6,7 @@ import { useProjectBundle } from './ProjectFrame';
 import { EmptyState, Mono } from '@/components/ui/bits';
 import { canSeeFinancials } from '@/lib/domain/permissions';
 import { STATUS_LABEL } from '@/lib/domain/workflow';
+import { CalendarSubscribeButton } from '@/features/notifications/CalendarSubscribeButton';
 
 const usd = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
@@ -74,6 +75,7 @@ export function ProjectOverview() {
           <Typography variant="h3" sx={{ mt: 2 }} gutterBottom>
             Upcoming milestones
           </Typography>
+          <CalendarSubscribeButton projectKey={b.project.key} />
           <List dense>
             {upcoming.map((u) => (
               <ListItem key={u.name} disableGutters>

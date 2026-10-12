@@ -27,6 +27,7 @@ import {
   writeAudit,
   type DecideContext,
 } from './gates';
+import { onDeliverableSubmitted } from './notify';
 
 /**
  * Deliverables and client acceptance. `DeliverableStore` has two implementations, picked like
@@ -194,6 +195,7 @@ async function memSubmitDeliverable(s: Session, id: string) {
     `Deliverable "${d.name}" submitted for client acceptance`,
   );
   writeAudit(s, 'deliverable.submit', 'deliverable', d.id, before, d.status);
+  onDeliverableSubmitted(s, project, d);
   return view(s, d);
 }
 

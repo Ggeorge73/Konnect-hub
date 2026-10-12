@@ -17,6 +17,7 @@ import {
 import { canTransition, STATUS_LABEL } from '../domain/workflow';
 import { GATE_NAMES } from '../domain/templates';
 import { recordStatusChange } from './pulse-history';
+import { onCommentAdded, onItemCreated, onItemUpdated } from './notify';
 
 const g = globalThis as unknown as { __khDb?: Db };
 export const db = (): Db => (g.__khDb ??= buildSeed());
@@ -294,6 +295,7 @@ export const memoryRepo: Repo = {
     if (item.status === 'accepted') throw new ValidationError('New items cannot start as Accepted.');
     d.items.push(item);
     log(s, project.id, 'item.created', `${item.key} created`, item.id);
+    onItemCreated(s, item);
     return item;
   },
 
@@ -331,6 +333,7 @@ export const memoryRepo: Repo = {
     }
     if (fields.visibility && fields.visibility !== before.visibility)
       audit(s, 'visibility.change', 'work_item', item.id, before.visibility, fields.visibility);
+    onItemUpdated(s, before, item);
     return item;
   },
 
@@ -361,6 +364,7 @@ export const memoryRepo: Repo = {
     };
     d.comments.push(c);
     log(s, item.projectId, 'comment.added', `Comment on ${item.key}`, item.id);
+    onCommentAdded(s, item, c);
     return c;
   },
 

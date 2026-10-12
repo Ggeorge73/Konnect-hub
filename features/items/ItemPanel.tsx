@@ -45,6 +45,9 @@ import type { ItemStatus, Visibility, WorkItem } from '@/lib/domain/types';
 import { useProjectBundle } from '@/features/projects/ProjectFrame';
 import { useHotkeys } from '@/components/shell/useHotkeys';
 import { LinkedRaid } from '@/features/raid/LinkedRaid';
+import { useRealtime } from '@/features/realtime/useRealtime';
+import { PresenceAvatars } from '@/features/realtime/PresenceAvatars';
+import { WatchButton } from '@/features/notifications/WatchButton';
 
 export function ItemPanel({ projectId }: { projectId: string }) {
   const params = useSearchParams();
@@ -53,6 +56,7 @@ export function ItemPanel({ projectId }: { projectId: string }) {
   const pathname = usePathname();
   const theme = useTheme();
   const mobile = useMediaQuery(theme.breakpoints.down('sm'));
+  useRealtime(projectId);
   const close = () => {
     const sp = new URLSearchParams(params.toString());
     sp.delete('item');
@@ -124,6 +128,8 @@ function ItemDetailView({
         <ItemKey k={item.key} />
         <VisibilityChip visibility={item.visibility} />
         <Box sx={{ flex: 1 }} />
+        <PresenceAvatars itemKey={item.key} />
+        <WatchButton itemKey={item.key} />
         <IconButton aria-label="Close item panel" onClick={onClose}>
           <Close />
         </IconButton>
