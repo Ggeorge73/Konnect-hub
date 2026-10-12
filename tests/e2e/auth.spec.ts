@@ -34,3 +34,20 @@ test('sign-out redirects to the sign-in page', async ({ page }) => {
   expect(res.status()).toBe(303);
   expect(res.headers()['location']).toContain('/auth/sign-in');
 });
+
+test('demo mode: the session reports demo auth and the user menu keeps the persona switcher', async ({
+  page,
+}) => {
+  await page.request.post('/api/session', { data: { userId: 'u_lead' } });
+  const me = await (await page.request.get('/api/session')).json();
+  expect(me.auth).toBe('demo');
+  await page.goto('/');
+  await page.getByRole('button', { name: /Switch demo user/ }).click();
+  await expect(page.getByText('Demo mode — view as')).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Sign out (Supabase mode)' })).toHaveAttribute(
+    'aria-disabled',
+    'true',
+  );
+  await expect(page.getByRole('menuitem', { name: 'Sign out', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+});

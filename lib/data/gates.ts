@@ -19,15 +19,33 @@ import {
   type GateReview,
 } from '../domain/gates';
 import { db } from './memory';
+import { isPostgresEnabled } from './index';
+import { postgresGateStore } from './gates-postgres';
 import { newId } from './ids';
-import { ForbiddenError, NotFoundError, ValidationError } from './errors';
+import { ForbiddenError, NotFoundError, ReauthRequiredError, ValidationError } from './errors';
 
-/** 401 for a decision without a fresh re-auth. Extends ForbiddenError so `handle()` maps its status. */
-export class ReauthRequiredError extends ForbiddenError {
-  status = 401;
-  constructor() {
-    super('reauth_required');
-  }
+export { ReauthRequiredError };
+
+/**
+ * Gate criteria, review requests and sponsor decisions. `GateStore` has two implementations,
+ * picked like getRepo(): the demo store below and the Postgres + RLS store in gates-postgres.ts
+ * (request_gate_review / decide_gate RPCs). Shared behaviour: lib/data/contract-gates.ts.
+ */
+export interface GateStore {
+  getGates(s: Session, key: string): Promise<GatesOverview>;
+  addCriterion(s: Session, key: string, phaseId: string, text: string): Promise<GateCriterion>;
+  updateCriterion(
+    s: Session,
+    key: string,
+    criterionId: string,
+    patch: { text?: string; done?: boolean },
+  ): Promise<GateCriterion>;
+  removeCriterion(s: Session, key: string, criterionId: string): Promise<{ ok: boolean }>;
+  requestReview(s: Session, key: string, input: RequestReviewInput): Promise<GateReview>;
+  /** Pending reviews the signed-in user may decide (Client Sponsor of the project's org only). */
+  listPendingReviews(s: Session): Promise<PendingGateReview[]>;
+  /** Client Sponsor decision; needs a fresh re-auth (`ctx.reauthAt`, from the signed cookie). */
+  decideGate(s: Session, reviewId: string, input: DecisionInput, ctx: DecideContext): Promise<GateReview>;
 }
 
 const now = () => new Date().toISOString();
@@ -143,7 +161,7 @@ export interface GatesOverview {
   canDecide: boolean;
 }
 
-export async function getGates(s: Session, key: string): Promise<GatesOverview> {
+async function memGetGates(s: Session, key: string): Promise<GatesOverview> {
   const project = requireVisibleProject(s, key);
   const phases = phasesOf(project.id);
   const ids = new Set(phases.map((p) => p.id));
@@ -159,7 +177,7 @@ export async function getGates(s: Session, key: string): Promise<GatesOverview> 
   };
 }
 
-export async function addCriterion(s: Session, key: string, phaseId: string, text: string) {
+async function memAddCriterion(s: Session, key: string, phaseId: string, text: string) {
   const project = requireVisibleProject(s, key);
   requireManager(s, project);
   const phase = requirePhase(project, phaseId);
@@ -172,7 +190,7 @@ export async function addCriterion(s: Session, key: string, phaseId: string, tex
   return c;
 }
 
-export async function updateCriterion(
+async function memUpdateCriterion(
   s: Session,
   key: string,
   criterionId: string,
@@ -199,7 +217,7 @@ export async function updateCriterion(
   return c;
 }
 
-export async function removeCriterion(s: Session, key: string, criterionId: string) {
+async function memRemoveCriterion(s: Session, key: string, criterionId: string) {
   const project = requireVisibleProject(s, key);
   requireManager(s, project);
   const d = db();
@@ -219,7 +237,7 @@ export interface RequestReviewInput {
   shareBudget?: boolean;
 }
 
-export async function requestReview(s: Session, key: string, input: RequestReviewInput) {
+async function memRequestReview(s: Session, key: string, input: RequestReviewInput) {
   const project = requireVisibleProject(s, key);
   requireManager(s, project);
   const d = db();
@@ -303,7 +321,7 @@ export interface PendingGateReview {
 }
 
 /** Pending reviews the signed-in user may decide (Client Sponsor of the project's org only). */
-export async function listPendingReviews(s: Session): Promise<PendingGateReview[]> {
+async function memListPendingReviews(s: Session): Promise<PendingGateReview[]> {
   const d = db();
   return d.gateReviews
     .filter((r) => r.status === 'pending')
@@ -328,7 +346,7 @@ export interface DecideContext {
   now?: Date;
 }
 
-export async function decideGate(s: Session, reviewId: string, input: DecisionInput, ctx: DecideContext) {
+async function memDecideGate(s: Session, reviewId: string, input: DecisionInput, ctx: DecideContext) {
   const d = db();
   const review = d.gateReviews.find((r) => r.id === reviewId);
   if (!review) throw new NotFoundError('Gate review not found');
@@ -406,3 +424,27 @@ export async function decideGate(s: Session, reviewId: string, input: DecisionIn
   );
   return redactReview(s.user, review);
 }
+
+/** The demo-store implementation. */
+export const memoryGateStore: GateStore = {
+  getGates: memGetGates,
+  addCriterion: memAddCriterion,
+  updateCriterion: memUpdateCriterion,
+  removeCriterion: memRemoveCriterion,
+  requestReview: memRequestReview,
+  listPendingReviews: memListPendingReviews,
+  decideGate: memDecideGate,
+};
+
+/** The active store: Postgres + RLS when getRepo() would pick Postgres, else the demo store. */
+export const gateStore = (): GateStore => (isPostgresEnabled() ? postgresGateStore() : memoryGateStore);
+
+// Public API used by route handlers and pages: each call goes to the active store.
+export const getGates: GateStore['getGates'] = (...a) => gateStore().getGates(...a);
+export const addCriterion: GateStore['addCriterion'] = (...a) => gateStore().addCriterion(...a);
+export const updateCriterion: GateStore['updateCriterion'] = (...a) => gateStore().updateCriterion(...a);
+export const removeCriterion: GateStore['removeCriterion'] = (...a) => gateStore().removeCriterion(...a);
+export const requestReview: GateStore['requestReview'] = (...a) => gateStore().requestReview(...a);
+export const listPendingReviews: GateStore['listPendingReviews'] = (...a) =>
+  gateStore().listPendingReviews(...a);
+export const decideGate: GateStore['decideGate'] = (...a) => gateStore().decideGate(...a);

@@ -43,5 +43,11 @@ Restricted projects are hidden from internal users who are not US persons, even 
 - **Audit log.** `audit_log` rejects `UPDATE`, `DELETE` and `TRUNCATE`, even from the table owner.
 - **Profiles.** Users can edit their own profile but cannot change their role, org, email, US-person flag or MFA flag.
 - **Gate reviews.** Only a client sponsor can insert a gate review. A rejection needs a reason, and an approval with conditions needs the conditions.
+- **Re-auth.** `decide_gate` and `decide_deliverable_criterion` need a `reauth_events` row from the last 15 minutes. Only the server writes one, with `record_reauth(user_id, at)` (`0009_shield_reauth_mfa.sql`): it is not executable by `anon` or `authenticated`, and the app calls it as its own login role at the start of the decision transaction, after verifying the signed re-auth cookie.
+- **MFA flag.** After a TOTP verify, `mark_mfa_enabled()` sets the caller's own `profiles.mfa_enabled`. It needs an `aal2` JWT and never touches another row; direct updates of the flag stay blocked.
+
+## Data path
+
+`getRepo()` and the domain stores (`raidStore()`, `sprintStore()`, `gateStore()`, `deliverableStore()`, `acceptanceRecordStore()`) all pick Postgres + RLS when `DATABASE_URL` is set and either `KH_DATA=postgres` or Supabase is configured, otherwise the in-memory demo store. Each Postgres call runs in one transaction that sets `role authenticated`, then the JWT claims. The contract suites in `lib/data/contract*.ts` run against both stores.
 
 Helper functions available to policies and the app: `current_profile_role()`, `current_org_id()`, `is_admin()`, `is_internal()`, `is_client()`, `can_see_project(id)`, `visible_project_ids()`, `can_manage_project(id)`, `can_see_financials(id)`.

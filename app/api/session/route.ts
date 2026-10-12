@@ -5,10 +5,14 @@ import { db } from '@/lib/data/memory';
 import { isSupabaseConfigured } from '@/lib/config';
 import { SEED_PROFILE_UUID } from '@/lib/data/seed-ids';
 
+/**
+ * The signed-in user and org, plus `auth`: 'supabase' when Supabase Auth is configured (real
+ * sign-in, Sign out) or 'demo' (persona switcher). The client shell never guesses the mode.
+ */
 export async function GET() {
   const s = await getSession();
   const { costRate: _c, ...user } = s.user;
-  return NextResponse.json({ user, org: s.org });
+  return NextResponse.json({ user, org: s.org, auth: isSupabaseConfigured() ? 'supabase' : 'demo' });
 }
 
 /** Demo-mode only: switch the signed-in demo persona. */

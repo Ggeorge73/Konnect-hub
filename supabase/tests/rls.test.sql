@@ -833,5 +833,70 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 16. Shield: mark_mfa_enabled() and record_reauth() (0009_shield_reauth_mfa.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_cm uuid := tests.uid('cmember');
+  v_cv uuid := tests.uid('cviewer');
+begin
+  -- A signed-in user at aal1 cannot flag MFA; the flag is unchanged.
+  perform tests.as_user('cmember');
+  perform tests.throws('select public.mark_mfa_enabled()', 'mark MFA without aal2');
+  perform set_config('request.jwt.claims', json_build_object('sub', v_cm, 'aal', 'aal1')::text, true);
+  perform tests.throws('select public.mark_mfa_enabled()', 'mark MFA at aal1');
+  -- Users still cannot set the flag directly (profiles_guard), even on their own row.
+  perform tests.throws(format('update public.profiles set mfa_enabled = true where id = %L', v_cm),
+                       'direct update of own mfa_enabled');
+  perform tests.as_owner();
+  perform tests.ok((select not mfa_enabled from public.profiles where id = v_cm), 'flag unchanged before aal2');
+
+  -- At aal2 it flips the caller's own row only, and is idempotent.
+  perform tests.as_user('cmember');
+  perform set_config('request.jwt.claims', json_build_object('sub', v_cm, 'aal', 'aal2')::text, true);
+  perform tests.ok(public.mark_mfa_enabled(), 'mark MFA at aal2 returns true');
+  perform tests.ok(public.mark_mfa_enabled(), 'mark MFA is idempotent');
+  perform tests.as_owner();
+  perform tests.ok((select mfa_enabled from public.profiles where id = v_cm), 'caller flagged');
+  perform tests.ok((select not mfa_enabled from public.profiles where id = v_cv), 'other users untouched');
+  perform tests.eq((select count(*) from public.profiles where mfa_enabled and role::text like 'client%'), 1,
+                   'exactly one client row changed');
+  perform tests.eq((select count(*) from public.audit_log where action = 'profile.mfa_enabled'
+                    and entity_id = v_cm::text and actor_id = v_cm), 1, 'MFA enrolment audited once');
+  -- A claims sub for another user cannot redirect it: auth.uid() is the caller.
+  perform tests.as_user('cviewer');
+  perform set_config('request.jwt.claims', json_build_object('sub', v_cm, 'aal', 'aal2')::text, true);
+  perform public.mark_mfa_enabled();
+  perform tests.as_owner();
+  perform tests.ok((select mfa_enabled from public.profiles where id = v_cv), 'viewer flagged only themselves');
+  perform tests.ok(not has_function_privilege('anon', 'public.mark_mfa_enabled()', 'execute'),
+                   'anon cannot execute mark_mfa_enabled');
+
+  -- record_reauth: server-only. Signed-in users cannot record a re-auth for themselves or others.
+  perform tests.ok(not has_function_privilege('authenticated', 'public.record_reauth(uuid, timestamptz)', 'execute'),
+                   'authenticated cannot execute record_reauth');
+  perform tests.ok(not has_function_privilege('anon', 'public.record_reauth(uuid, timestamptz)', 'execute'),
+                   'anon cannot execute record_reauth');
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.record_reauth(%L, now())', tests.uid('sponsor')),
+                       'sponsor records own re-auth');
+  perform tests.ok(not public.has_fresh_reauth(), 'no fresh re-auth for the sponsor');
+  -- The server (owner role) records a fresh one; stale or future times are ignored.
+  perform tests.as_owner();
+  perform tests.ok(not public.record_reauth(tests.uid('sponsor'), now() - interval '16 minutes'), 'stale re-auth ignored');
+  perform tests.ok(not public.record_reauth(tests.uid('sponsor'), now() + interval '5 minutes'), 'future re-auth ignored');
+  perform tests.ok(public.record_reauth(tests.uid('sponsor'), now()), 'fresh re-auth recorded');
+  perform tests.ok(public.record_reauth(tests.uid('sponsor'), now()), 'same re-auth recorded twice');
+  perform tests.eq((select count(*) from public.reauth_events where user_id = tests.uid('sponsor')), 1,
+                   're-auth deduplicated');
+  perform tests.as_user('sponsor');
+  perform tests.ok(public.has_fresh_reauth(), 'sponsor has a fresh re-auth');
+  perform tests.as_user('cmember');
+  perform tests.ok(not public.has_fresh_reauth(), 'a re-auth is per user');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;
