@@ -478,5 +478,87 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 9. Sprints and timeline (0002_sprints_timeline): Lead/Admin plan sprints, one active sprint
+--    per project, end after start, hours-per-point, epic planned dates.
+-- ===========================================================================
+begin;
+do $$
+declare
+  n int;
+begin
+  -- Everyone on the project reads sprints; clients and team members cannot change them.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('sprints', format('project_id = %L', tests.ehr())), 3, 'sponsor reads EHR sprints');
+  update public.sprints set name = 'hacked' where id = md5('s_ehr3')::uuid;
+  get diagnostics n = row_count;
+  perform tests.eq(n, 0, 'sponsor renamed a sprint');
+
+  perform tests.as_user('dev');
+  perform tests.eq(tests.count('sprints', format('project_id = %L', tests.ehr())), 3, 'dev reads EHR sprints');
+  update public.sprints set status = 'completed' where id = md5('s_ehr2')::uuid;
+  get diagnostics n = row_count;
+  perform tests.eq(n, 0, 'team member completed a sprint');
+  perform tests.throws(format($q$insert into public.sprints (project_id, phase_id, name, start_date, end_date)
+                                 values (%L, %L, 'Dev sprint', '2026-11-02', '2026-11-13')$q$,
+                              tests.ehr(), md5('p_ehr_ph3')::uuid),
+                       'team member creates a sprint');
+  -- ...but can still move items into a sprint.
+  update public.work_items set sprint_id = md5('s_ehr3')::uuid where id = tests.item('EHR-11');
+  get diagnostics n = row_count;
+  perform tests.eq(n, 1, 'team member moves an item into a sprint');
+
+  -- Lead plans sprints; end must be after start.
+  perform tests.as_user('lead');
+  insert into public.sprints (project_id, phase_id, name, start_date, end_date, capacity_hours)
+  values (tests.ehr(), md5('p_ehr_ph3')::uuid, 'EHR Sprint 4', '2026-11-02', '2026-11-13', 200);
+  perform tests.eq(tests.count('sprints', 'name = ''EHR Sprint 4'''), 1, 'lead creates a sprint');
+  perform tests.throws(format($q$insert into public.sprints (project_id, phase_id, name, start_date, end_date)
+                                 values (%L, %L, 'Zero-length', '2026-11-02', '2026-11-02')$q$,
+                              tests.ehr(), md5('p_ehr_ph3')::uuid),
+                       'sprint ending on its start date');
+  perform tests.throws(format($q$insert into public.sprints (project_id, phase_id, name, start_date, end_date, capacity_hours)
+                                 values (%L, %L, 'Negative', '2026-11-02', '2026-11-13', -1)$q$,
+                              tests.ehr(), md5('p_ehr_ph3')::uuid),
+                       'negative sprint capacity');
+
+  -- One active sprint per project: Sprint 3 cannot start while Sprint 2 is active.
+  perform tests.throws(format('update public.sprints set status = ''active'' where id = %L', md5('s_ehr3')::uuid),
+                       'second active sprint in EHR');
+  update public.sprints set status = 'completed' where id = md5('s_ehr2')::uuid;
+  update public.sprints set status = 'active' where id = md5('s_ehr3')::uuid;
+  get diagnostics n = row_count;
+  perform tests.eq(n, 1, 'lead starts Sprint 3 after completing Sprint 2');
+  perform tests.eq(tests.count('sprints', format('project_id = %L and status = ''active''', tests.ehr())), 1,
+                   'exactly one active EHR sprint');
+
+  -- The Lead of EHR is not the Lead of PSR (Admin leads it): no sprint writes there.
+  perform tests.throws(format($q$insert into public.sprints (project_id, name, start_date, end_date)
+                                 values (%L, 'PSR sprint', '2026-11-02', '2026-11-13')$q$, tests.psr()),
+                       'lead creates a sprint on a project they do not lead');
+
+  -- Hours per point: defaults to 6, managers may change it, within range.
+  perform tests.ok((select hours_per_point = 6 from public.projects where id = tests.ehr()), 'default 6 h per point');
+  update public.projects set hours_per_point = 8 where id = tests.ehr();
+  perform tests.ok((select hours_per_point = 8 from public.projects where id = tests.ehr()), 'lead sets hours per point');
+  perform tests.throws(format('update public.projects set hours_per_point = 0 where id = %L', tests.ehr()),
+                       'zero hours per point');
+
+  -- Epic planned dates (timeline drag): both or neither, end not before start.
+  update public.work_items set planned_start = '2026-09-21', planned_end = '2026-11-13' where id = tests.item('EHR-1');
+  get diagnostics n = row_count;
+  perform tests.eq(n, 1, 'lead schedules an epic');
+  perform tests.throws(format($q$update public.work_items set planned_start = '2026-11-13', planned_end = '2026-09-21'
+                                 where id = %L$q$, tests.item('EHR-2')), 'epic planned end before start');
+  perform tests.throws(format($q$update public.work_items set planned_start = '2026-11-13' where id = %L$q$,
+                              tests.item('EHR-2')), 'epic planned start without end');
+
+  perform tests.as_user('dev');
+  update public.projects set hours_per_point = 2 where id = tests.ehr();
+  get diagnostics n = row_count;
+  perform tests.eq(n, 0, 'team member changes hours per point');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;

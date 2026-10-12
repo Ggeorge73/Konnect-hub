@@ -16,6 +16,8 @@ import type {
   AuditEntry,
 } from '../domain/types';
 import { getTemplate } from '../domain/templates';
+import type { PlanningState } from '../domain/sprints';
+import { datedEhrPhases, seedPlanning, SEED_TIMELINE_LINKS } from './seed-sprints';
 
 export interface Db {
   orgs: Organization[];
@@ -30,6 +32,7 @@ export interface Db {
   comments: Comment[];
   activity: ActivityEvent[];
   audit: AuditEntry[];
+  planning: PlanningState;
 }
 
 export const DEMO_PROJECT_KEY = 'EHR';
@@ -617,13 +620,14 @@ export function buildSeed(): Db {
     profiles: structuredClone(PROFILES),
     projects,
     members,
-    phases: [...ehr.phases, ...rvb.phases, ...psr.phases],
+    phases: [...datedEhrPhases(ehr.phases), ...rvb.phases, ...psr.phases],
     criteria: [...ehr.criteria, ...rvb.criteria, ...psr.criteria],
     sprints,
     items,
-    links,
+    links: [...links, ...SEED_TIMELINE_LINKS],
     comments,
     activity,
     audit: [],
+    planning: seedPlanning(),
   };
 }
