@@ -528,6 +528,44 @@ export function createPostgresRepo(sql: Sql): Repo {
     return findItem(tx, item.id);
   }
 
+  /**
+   * SEC-02: the 0011 trigger refuses a non-U.S. assignee on a restricted project and rolls the
+   * transaction back, so the `security.restricted_refused` audit entry is written in a new one.
+   */
+  async function auditRestricted<T>(
+    s: Session,
+    work: Promise<T>,
+    itemId?: string,
+    projectId?: string,
+  ): Promise<T> {
+    try {
+      return await work;
+    } catch (e) {
+      if (e instanceof ValidationError && /is not a U\.S\. person/.test(e.message))
+        await asUser(sql, s.user.id, async (tx) => {
+          const [p] = projectId
+            ? await tx`select id from public.projects
+                       where id = ${uuidOr(projectId)} or key = ${projectId.toUpperCase()}`
+            : await tx`select project_id as id from public.work_items
+                       where id = ${uuidOr(itemId ?? '')} or key = ${(itemId ?? '').toUpperCase()}`;
+          await audit(
+            tx,
+            s,
+            p?.id ?? null,
+            'security.restricted_refused',
+            'project',
+            p?.id ?? '',
+            undefined,
+            {
+              via: 'assignee',
+              message: e.message,
+            },
+          );
+        });
+      throw e;
+    }
+  }
+
   return {
     async listOrgs(s) {
       return run(s, async (tx) => {
@@ -717,7 +755,7 @@ export function createPostgresRepo(sql: Sql): Repo {
         throw new ForbiddenError('You cannot create items in this project.');
       if (!input.title.trim()) throw new ValidationError('Title is required.');
       if (input.status === 'accepted') throw new ValidationError('New items cannot start as Accepted.');
-      return run(s, async (tx) => {
+      const work = run(s, async (tx) => {
         const project = await findProject(tx, input.projectId);
         if (clientRequest) {
           // Clients can't insert work_items under RLS; the RPC creates a shared client_request.
@@ -740,19 +778,25 @@ export function createPostgresRepo(sql: Sql): Repo {
         await logActivity(tx, s, project.id, 'item.created', `${row.key} created`, row.visibility, row.id);
         return findItem(tx, row.id);
       });
+      return auditRestricted(s, work, undefined, input.projectId);
     },
 
     async updateItem(s, id, patch) {
-      return run(s, (tx) => updateOne(tx, s, id, patch));
+      return auditRestricted(
+        s,
+        run(s, (tx) => updateOne(tx, s, id, patch)),
+        id,
+      );
     },
 
     async bulkUpdate(s, ids, patch) {
       // One transaction: either every item moves or none does.
-      return run(s, async (tx) => {
+      const work = run(s, async (tx) => {
         const out: WorkItem[] = [];
         for (const id of ids) out.push(await updateOne(tx, s, id, patch));
         return out;
       });
+      return auditRestricted(s, work, ids[0] ?? '');
     },
 
     async addComment(s, { itemId, body, visibility }) {

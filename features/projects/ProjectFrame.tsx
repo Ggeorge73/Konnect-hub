@@ -8,6 +8,7 @@ import type { ProjectBundle } from '@/lib/data/repo';
 import { GateTracker } from '@/components/ui/GateTracker';
 import { Mono, RagChip } from '@/components/ui/bits';
 import { ItemPanel } from '@/features/items/ItemPanel';
+import { RestrictedChip } from '@/features/capacity/CapacityChips';
 
 const Ctx = createContext<ProjectBundle | null>(null);
 export const ProjectBundleProvider = Ctx.Provider;
@@ -28,6 +29,7 @@ const TABS = [
   { label: 'RAID', seg: 'raid' },
   { label: 'Gates', seg: 'gates' },
   { label: 'Deliverables', seg: 'deliverables' },
+  { label: 'Team', seg: 'team' },
 ];
 
 export function ProjectFrame({ projectKey, children }: { projectKey: string; children: React.ReactNode }) {
@@ -50,6 +52,7 @@ export function ProjectFrame({ projectKey, children }: { projectKey: string; chi
                 {project.name}
               </Typography>
               <RagChip rag={project.rag} reason={project.ragReason} />
+              {project.restricted && <RestrictedChip />}
             </Stack>
           </Box>
           <Box sx={{ flex: 1, minWidth: { md: 380 }, maxWidth: { md: 560 }, ml: { md: 'auto' } }}>
