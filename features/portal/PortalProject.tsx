@@ -19,8 +19,18 @@ import { EmptyState, ItemKey, TypeIcon } from '@/components/ui/bits';
 import { STATUS_LABEL } from '@/lib/domain/workflow';
 import { ItemPanel } from '@/features/items/ItemPanel';
 import { ProjectBundleProvider } from '@/features/projects/ProjectFrame';
+import { SharedRaid } from '@/features/raid/SharedRaid';
+import type { RaidView } from '@/lib/domain/raid';
 
-export function PortalProject({ bundle, items }: { bundle: ProjectBundle; items: WorkItem[] }) {
+export function PortalProject({
+  bundle,
+  items,
+  raid = [],
+}: {
+  bundle: ProjectBundle;
+  items: WorkItem[];
+  raid?: RaidView[];
+}) {
   const path = usePathname();
   const visible = items.filter((i) => i.type !== 'epic');
   return (
@@ -63,6 +73,7 @@ export function PortalProject({ bundle, items }: { bundle: ProjectBundle; items:
             </List>
           )}
         </Paper>
+        <SharedRaid entries={raid} />
       </Stack>
       <Suspense fallback={null}>
         <ItemPanel projectId={bundle.project.id} />

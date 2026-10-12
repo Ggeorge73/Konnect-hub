@@ -478,5 +478,61 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 9. RAID register (0003): decisions, issue SLA, residual score, escalation bookkeeping, links.
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_id uuid;
+  v_upd timestamptz;
+begin
+  -- Business-day math (2026-10-16 is a Friday).
+  perform tests.ok(public.add_business_days('2026-10-16 15:00+00', 1) = '2026-10-19 15:00+00', 'Fri + 1 bd = Mon');
+  perform tests.ok(public.add_business_days('2026-10-17 09:00+00', 10) = '2026-10-30 09:00+00', 'Sat + 10 bd = 2nd Fri');
+
+  perform tests.as_user('lead');
+  insert into public.raid_entries (project_id, kind, title, severity, created_at)
+  values (tests.ehr(), 'issue', 'Critical issue', 'critical', '2026-10-16 15:00+00') returning id into v_id;
+  perform tests.ok((select sla_due_at = '2026-10-18 15:00+00' from public.raid_entries where id = v_id), 'critical SLA is 48h');
+  update public.raid_entries set severity = 'major' where id = v_id;
+  perform tests.ok((select sla_due_at = '2026-10-23 15:00+00' from public.raid_entries where id = v_id), 'major SLA is 5 business days');
+
+  -- Escalation bookkeeping does not count as an update (staleness is preserved).
+  select updated_at into v_upd from public.raid_entries where id = v_id;
+  update public.raid_entries set escalated_at = now() where id = v_id;
+  perform tests.ok((select updated_at = v_upd from public.raid_entries where id = v_id), 'escalated_at keeps updated_at');
+  update public.raid_entries set description = 'Vendor replied' where id = v_id;
+  perform tests.ok((select updated_at > v_upd from public.raid_entries where id = v_id), 'real edit bumps updated_at');
+
+  -- Decisions and residual score.
+  insert into public.raid_entries (project_id, kind, title, decided_by, rationale, entry_date, status)
+  values (tests.ehr(), 'decision', 'Two-wave go-live', tests.uid('lead'), 'Halves support load', '2026-10-01', 'closed')
+  returning id into v_id;
+  perform tests.ok(v_id is not null, 'decision entry inserted');
+  insert into public.raid_entries (project_id, kind, title, probability, impact, residual_probability, residual_impact)
+  values (tests.ehr(), 'risk', 'Residual', 4, 4, 2, 3) returning id into v_id;
+  perform tests.ok((select escalate and score = 16 and residual_score = 6 from public.raid_entries where id = v_id),
+                   'residual score generated');
+
+  -- Links: both ends must be visible; clients read only; no cross-project links.
+  perform tests.eq(tests.count('raid_links', format('project_id = %L', tests.ehr())), 2, 'lead sees both EHR links');
+  insert into public.raid_links (project_id, raid_id, item_id) values (tests.ehr(), v_id, tests.item('EHR-16'));
+  perform tests.throws(format('insert into public.raid_links (project_id, raid_id, item_id) values (%L, %L, %L)',
+                              tests.ehr(), v_id, tests.item('RVB-2')), 'cross-project RAID link');
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('raid_links', format('project_id = %L', tests.ehr())), 1,
+                   'sponsor sees only the link between shared entry and shared item');
+  perform tests.throws(format('insert into public.raid_links (project_id, raid_id, item_id) values (%L, %L, %L)',
+                              tests.ehr(), md5('rd_ehr_1')::uuid, tests.item('EHR-9')), 'client links RAID entry');
+  update public.raid_entries set title = 'Edited by client' where id = md5('rd_ehr_1')::uuid;
+  perform tests.eq(tests.count('raid_entries', 'title = ''Edited by client'''), 0, 'client edit of RAID entry is a no-op');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('raid_links'), 1, 'rsponsor sees the shared RVB link only');
+  perform tests.as_user('assoc');
+  perform tests.eq(tests.count('raid_links', format('project_id = %L', tests.rvb())), 0, 'associate sees no RVB links');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;

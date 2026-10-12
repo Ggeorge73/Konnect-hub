@@ -269,6 +269,12 @@ insert into public.raid_entries (id, project_id, kind, title, description, categ
    'Internal note on county security review queue.', 'Regulatory', 'b0000000-0000-4000-8000-000000000002', 2, 3,
    null, null, null, 'internal', 'open', 'b0000000-0000-4000-8000-000000000002');
 
+-- RAID links (0003_raid_register). The EHR-12 link points at an internal item, so clients never see it.
+insert into public.raid_links (project_id, raid_id, item_id) values
+  ('c0000000-0000-4000-8000-000000000001', md5('rd_ehr_1')::uuid, md5('wi_ehr_7')::uuid),
+  ('c0000000-0000-4000-8000-000000000001', md5('rd_ehr_1')::uuid, md5('wi_ehr_12')::uuid),
+  ('c0000000-0000-4000-8000-000000000002', md5('rd_rvb_1')::uuid, md5('wi_rvb_2')::uuid);
+
 -- Time, allocations, status reports -----------------------------------------------
 insert into public.time_entries (id, project_id, item_id, user_id, entry_date, hours, note) values
   (md5('te_1')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('wi_ehr_7')::uuid, 'b0000000-0000-4000-8000-000000000004', '2026-10-07', 6, 'Dry-run'),

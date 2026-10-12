@@ -16,6 +16,7 @@ import type {
   AuditEntry,
 } from '../domain/types';
 import { getTemplate } from '../domain/templates';
+import { seedRaid } from './seed-raid';
 
 export interface Db {
   orgs: Organization[];
@@ -30,6 +31,8 @@ export interface Db {
   comments: Comment[];
   activity: ActivityEvent[];
   audit: AuditEntry[];
+  raid: ReturnType<typeof seedRaid>['raid'];
+  notifications: ReturnType<typeof seedRaid>['notifications'];
 }
 
 export const DEMO_PROJECT_KEY = 'EHR';
@@ -625,5 +628,6 @@ export function buildSeed(): Db {
     comments,
     activity,
     audit: [],
+    ...seedRaid(),
   };
 }

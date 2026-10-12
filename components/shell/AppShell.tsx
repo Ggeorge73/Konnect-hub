@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   AppBar,
-  Badge,
   Box,
   Breadcrumbs,
   Button,
@@ -39,7 +38,6 @@ import ChevronLeft from '@mui/icons-material/ChevronLeft';
 import ChevronRight from '@mui/icons-material/ChevronRight';
 import Search from '@mui/icons-material/Search';
 import Add from '@mui/icons-material/Add';
-import NotificationsNoneOutlined from '@mui/icons-material/NotificationsNoneOutlined';
 import DarkModeOutlined from '@mui/icons-material/DarkModeOutlined';
 import LightModeOutlined from '@mui/icons-material/LightModeOutlined';
 import Menu from '@mui/icons-material/Menu';
@@ -50,6 +48,7 @@ import { useHotkeys } from './useHotkeys';
 import { SearchDialog } from './SearchDialog';
 import { QuickCreate } from './QuickCreate';
 import { UserMenu } from './UserMenu';
+import { NotificationsBell } from './NotificationsBell';
 
 const NAV_W = 248;
 const NAV_W_COLLAPSED = 76;
@@ -190,13 +189,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Create
               </Button>
             </Tooltip>
-            <Tooltip title="Notifications">
-              <IconButton aria-label="Notifications">
-                <Badge color="primary" variant="dot" invisible>
-                  <NotificationsNoneOutlined />
-                </Badge>
-              </IconButton>
-            </Tooltip>
+            <NotificationsBell />
             <Tooltip title={mode === 'dark' ? 'Light theme' : 'Dark theme'}>
               <IconButton aria-label="Toggle colour theme" onClick={toggle}>
                 {mode === 'dark' ? <LightModeOutlined /> : <DarkModeOutlined />}
