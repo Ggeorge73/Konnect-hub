@@ -1,5 +1,6 @@
 import 'server-only';
 import { NextResponse } from 'next/server';
+import { unstable_rethrow } from 'next/navigation';
 import { ZodError } from 'zod';
 import { errorStatus } from './data/errors';
 import { getSession } from './session';
@@ -16,6 +17,8 @@ export async function handle(fn: Handler) {
     const data = await fn({ session, repo: getRepo() });
     return NextResponse.json(data ?? { ok: true });
   } catch (e) {
+    // Let auth redirects from getSession() (sign-in, MFA) through.
+    unstable_rethrow(e);
     if (e instanceof ZodError)
       return NextResponse.json({ error: e.issues.map((i) => i.message).join('; ') }, { status: 400 });
     const status = errorStatus(e);
