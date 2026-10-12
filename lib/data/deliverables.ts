@@ -25,6 +25,7 @@ import {
   writeAudit,
   type DecideContext,
 } from './gates';
+import { onDeliverableSubmitted } from './notify';
 
 const now = () => new Date().toISOString();
 
@@ -170,6 +171,7 @@ export async function submitDeliverable(s: Session, id: string) {
     `Deliverable "${d.name}" submitted for client acceptance`,
   );
   writeAudit(s, 'deliverable.submit', 'deliverable', d.id, before, d.status);
+  onDeliverableSubmitted(s, project, d);
   return view(s, d);
 }
 

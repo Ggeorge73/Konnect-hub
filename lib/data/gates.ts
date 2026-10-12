@@ -21,6 +21,7 @@ import {
 import { db } from './memory';
 import { newId } from './ids';
 import { ForbiddenError, NotFoundError, ValidationError } from './errors';
+import { onGateDecided, onGateRequested } from './notify';
 
 /** 401 for a decision without a fresh re-auth. Extends ForbiddenError so `handle()` maps its status. */
 export class ReauthRequiredError extends ForbiddenError {
@@ -292,6 +293,7 @@ export async function requestReview(s: Session, key: string, input: RequestRevie
       budgetShared: review.budgetShared,
     },
   );
+  onGateRequested(s, project, review, phase.name);
   return redactReview(s.user, review);
 }
 
@@ -404,5 +406,6 @@ export async function decideGate(s: Session, reviewId: string, input: DecisionIn
     },
     ctx.ip,
   );
+  onGateDecided(s, project, review, phase.name);
   return redactReview(s.user, review);
 }

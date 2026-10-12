@@ -4,6 +4,7 @@ import { AppBar, Box, Container, Toolbar, Typography } from '@mui/material';
 import { APP_NAME } from '@/lib/config';
 import { useColorMode } from '@/components/providers';
 import { UserMenu } from '@/components/shell/UserMenu';
+import { NotificationsBell } from '@/components/shell/NotificationsBell';
 
 /** Client portal: same app, scoped experience, light theme by default. */
 export function PortalShell({
@@ -50,9 +51,12 @@ export function PortalShell({
             K
           </Box>
           <Typography fontWeight={700}>{APP_NAME}</Typography>
-          <Typography color="text.secondary">· {orgName} portal</Typography>
+          <Typography color="text.secondary" sx={{ display: { xs: 'none', sm: 'block' } }}>
+            · {orgName} portal
+          </Typography>
           <Box sx={{ flex: 1 }} />
-          <Box sx={{ width: 240 }}>
+          <NotificationsBell />
+          <Box sx={{ width: { xs: 'auto', sm: 240 }, minWidth: 0 }}>
             <UserMenu collapsed={false} />
           </Box>
         </Toolbar>

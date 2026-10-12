@@ -22,6 +22,7 @@ import { datedEhrPhases, seedPlanning, SEED_TIMELINE_LINKS } from './seed-sprint
 import type { GateReview } from '../domain/gates';
 import type { Deliverable } from '../domain/deliverables';
 import { seedGates } from './seed-gates';
+import { seedSignal } from './seed-signal';
 
 export interface Db {
   orgs: Organization[];
@@ -41,6 +42,7 @@ export interface Db {
   planning: PlanningState;
   gateReviews: GateReview[];
   deliverables: Deliverable[];
+  signal: ReturnType<typeof seedSignal>['signal'];
 }
 
 export const DEMO_PROJECT_KEY = 'EHR';
@@ -639,5 +641,6 @@ export function buildSeed(): Db {
     ...seedRaid(),
     planning: seedPlanning(),
     ...seedGates(),
+    ...seedSignal(items, comments),
   };
 }

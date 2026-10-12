@@ -9,11 +9,12 @@ import {
   type RaidEntry,
   type RaidView,
 } from '../domain/raid';
-import { escalationRecipients, type Notification, type NotificationKind } from '../domain/notifications';
+import { escalationRecipients, type Notification } from '../domain/notifications';
 import type { CreateRaidInput, RaidPatch } from '../raid-schemas';
 import { db } from './memory';
 import { newId } from './ids';
 import { ForbiddenError, NotFoundError, ValidationError } from './errors';
+import { notify } from './notify';
 
 /**
  * RAID register repository (demo store). Mirrors the `raid_entries` / `raid_links` RLS:
@@ -63,28 +64,6 @@ function audit(s: Session, action: string, entityId: string, before?: unknown, a
   });
 }
 
-function notify(
-  userIds: string[],
-  projectId: string,
-  kind: NotificationKind,
-  title: string,
-  href: string,
-  now: Date,
-): Notification[] {
-  const out = userIds.map((userId) => ({
-    id: newId('nt'),
-    userId,
-    projectId,
-    kind,
-    title,
-    href,
-    createdAt: iso(now),
-    readAt: null,
-  }));
-  db().notifications.push(...out);
-  return out;
-}
-
 function checkLinks(s: Session, projectId: string, ids: string[] | undefined) {
   if (!ids) return;
   const d = db();
@@ -115,14 +94,15 @@ function checkShape(e: RaidEntry) {
 }
 
 function riskEscalatedNotice(p: Project, e: RaidEntry, now: Date) {
-  notify(
-    [p.leadId],
-    p.id,
-    'risk_escalated',
-    `Escalate to steering: ${e.title} (score ${(e.probability ?? 0) * (e.impact ?? 0)})`,
-    `/projects/${p.key}/raid?tab=risk`,
+  notify({
+    kind: 'risk_escalated',
+    projectId: p.id,
+    recipients: [p.leadId],
+    title: `Escalate to steering: ${e.title} (score ${(e.probability ?? 0) * (e.impact ?? 0)})`,
+    href: `/projects/${p.key}/raid?tab=risk`,
+    visibility: 'internal',
     now,
-  );
+  });
 }
 
 export async function listRaid(
@@ -261,14 +241,15 @@ export async function escalateStaleIssues(
     for (const e of d.raid.filter((r) => r.projectId === p.id && dueForEscalation(r, now))) {
       const days = Math.floor((now.getTime() - new Date(e.updatedAt).getTime()) / 86_400_000);
       notifications.push(
-        ...notify(
-          escalationRecipients(p.leadId, admins),
-          p.id,
-          'sla_breach',
-          `Stale issue on ${p.key}: ${e.title} (no update in ${days} days)`,
-          `/projects/${p.key}/raid?tab=issue`,
+        ...notify({
+          kind: 'sla_breach',
+          projectId: p.id,
+          recipients: escalationRecipients(p.leadId, admins),
+          title: `Stale issue on ${p.key}: ${e.title} (no update in ${days} days)`,
+          href: `/projects/${p.key}/raid?tab=issue`,
+          visibility: 'internal',
           now,
-        ),
+        }),
       );
       e.escalatedAt = iso(now);
       escalated.push(e.id);
@@ -277,16 +258,5 @@ export async function escalateStaleIssues(
   return { escalated, notifications };
 }
 
-export async function listNotifications(s: Session): Promise<Notification[]> {
-  return db()
-    .notifications.filter((n) => n.userId === s.user.id)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .slice(0, 50);
-}
-
-/** Marks the given notifications (or all of them) read for the current user only. */
-export async function markNotificationsRead(s: Session, ids?: string[], now: Date = new Date()) {
-  for (const n of db().notifications)
-    if (n.userId === s.user.id && !n.readAt && (!ids || ids.includes(n.id))) n.readAt = iso(now);
-  return listNotifications(s);
-}
+/** Notification center reads moved to the central dispatcher (lib/data/notify.ts). */
+export { listNotifications, markNotificationsRead } from './notify';

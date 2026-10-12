@@ -1,5 +1,5 @@
 import { handle } from '@/lib/api';
-import { listNotifications, markNotificationsRead } from '@/lib/data/raid';
+import { listNotifications, markNotificationsRead } from '@/lib/data/notify';
 import { markReadSchema } from '@/lib/raid-schemas';
 
 /** GET: the signed-in user's own notifications, newest first. */

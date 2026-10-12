@@ -42,12 +42,15 @@ export function GateDecisionButtons({
   review,
   gateLabel,
   onDone,
+  autoOpen,
 }: {
   review: GateReview;
   gateLabel: string;
   onDone: () => void;
+  /** Opens this decision's dialog on mount (email deep link `/portal?approve=<reviewId>`). */
+  autoOpen?: GateDecision;
 }) {
-  const [open, setOpen] = useState<GateDecision | null>(null);
+  const [open, setOpen] = useState<GateDecision | null>(autoOpen ?? null);
   const copy = open ? COPY[open] : null;
   return (
     <>

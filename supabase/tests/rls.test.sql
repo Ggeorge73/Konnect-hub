@@ -764,5 +764,81 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 15. Signal: item watchers, per-kind notification channels and client-safe notifications
+--     (0008_signal.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_internal uuid;
+  v_shared uuid;
+begin
+  perform tests.as_owner();
+  select id into v_internal from public.work_items
+   where project_id = tests.ehr() and visibility = 'internal' and deleted_at is null order by number limit 1;
+  select id into v_shared from public.work_items
+   where project_id = tests.ehr() and visibility = 'shared' and deleted_at is null order by number limit 1;
+  perform tests.ok(v_internal is not null and v_shared is not null, 'seed has internal and shared EHR items');
+
+  -- Watching: anyone who can see an item may watch it; clients only shared items of their org.
+  perform tests.as_user('sponsor');
+  insert into public.item_watchers (item_id, user_id) values (v_shared, tests.uid('sponsor'));
+  perform tests.eq(tests.count('item_watchers', format('item_id = %L', v_shared)), 1, 'sponsor watches a shared item');
+  perform tests.throws(format('insert into public.item_watchers (item_id, user_id) values (%L, %L)',
+                              v_internal, tests.uid('sponsor')), 'client watches an internal item');
+  perform tests.throws(format('insert into public.item_watchers (item_id, user_id) values (%L, %L)',
+                              v_shared, tests.uid('cmember')), 'client subscribes someone else');
+  perform tests.throws(format('insert into public.item_watchers (item_id, user_id) values (%L, %L)',
+                              tests.item('RVB-2'), tests.uid('sponsor')), 'client watches another org''s item');
+
+  -- Internal staff auto-watch colleagues (the assignee), but never a client on an internal item.
+  perform tests.as_user('lead');
+  insert into public.item_watchers (item_id, user_id) values (v_internal, tests.uid('dev'));
+  perform tests.throws(format('insert into public.item_watchers (item_id, user_id) values (%L, %L)',
+                              v_internal, tests.uid('sponsor')), 'lead subscribes a client to an internal item');
+  perform tests.ok(tests.count('item_watchers', format('item_id = %L', v_shared)) >= 1, 'staff see watchers');
+
+  -- Clients only ever see their own watch rows, and nothing on internal items.
+  perform tests.as_user('cmember');
+  perform tests.eq(tests.count('item_watchers'), 0, 'client member sees other people''s watches');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('item_watchers'), 0, 'other org sees Peachtree watchers');
+  perform tests.as_user('dev');
+  update public.item_watchers set watching = false where item_id = v_internal and user_id = tests.uid('dev');
+  perform tests.ok((select not watching from public.item_watchers where item_id = v_internal
+                    and user_id = tests.uid('dev')), 'unwatch keeps an explicit row');
+  update public.item_watchers set watching = false where user_id = tests.uid('sponsor');
+  perform tests.as_owner();
+  perform tests.ok((select watching from public.item_watchers where item_id = v_shared
+                    and user_id = tests.uid('sponsor')), 'nobody edits someone else''s watch');
+
+  -- Channel preferences are personal and validated.
+  perform tests.as_user('sponsor');
+  insert into public.notification_channel_prefs (user_id, kind, channel)
+  values (tests.uid('sponsor'), 'gate_requested', 'email');
+  perform tests.throws(format('insert into public.notification_channel_prefs (user_id, kind, channel) values (%L, ''mention'', ''off'')',
+                              tests.uid('lead')), 'set another user''s preference');
+  perform tests.throws(format('insert into public.notification_channel_prefs (user_id, kind, channel) values (%L, ''mention'', ''pager'')',
+                              tests.uid('sponsor')), 'unknown channel');
+  perform tests.as_user('lead');
+  perform tests.eq(tests.count('notification_channel_prefs'), 0, 'lead sees the sponsor''s preferences');
+
+  -- Client safety: internal notifications (and internal-only kinds) never reach a client.
+  perform tests.throws(format('insert into public.notifications (user_id, project_id, kind, title, visibility) values (%L, %L, ''mention'', ''x'', ''internal'')',
+                              tests.uid('sponsor'), tests.ehr()), 'internal mention to a client');
+  perform tests.throws(format('insert into public.notifications (user_id, project_id, kind, title, visibility) values (%L, %L, ''risk_escalated'', ''x'', ''shared'')',
+                              tests.uid('sponsor'), tests.ehr()), 'risk escalation to a client');
+  insert into public.notifications (user_id, project_id, kind, title, visibility)
+  values (tests.uid('sponsor'), tests.ehr(), 'gate_requested', 'Gate 3 ready for approval', 'shared');
+  insert into public.notifications (user_id, project_id, kind, title, visibility)
+  values (tests.uid('dev'), tests.ehr(), 'mention', 'Lara mentioned you', 'internal');
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('notifications', 'kind = ''gate_requested'''), 1, 'sponsor gets the shared notification');
+  perform tests.throws(format('update public.notifications set visibility = ''internal'' where user_id = %L',
+                              tests.uid('sponsor')), 'client notification flipped to internal');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;

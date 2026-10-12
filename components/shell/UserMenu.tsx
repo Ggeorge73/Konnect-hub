@@ -1,5 +1,6 @@
 'use client';
 import { useState } from 'react';
+import Link from 'next/link';
 import { Avatar, Box, ButtonBase, Divider, ListSubheader, Menu, MenuItem, Typography } from '@mui/material';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
@@ -48,6 +49,10 @@ export function UserMenu({ collapsed }: { collapsed: boolean }) {
         )}
       </ButtonBase>
       <Menu anchorEl={anchor} open={Boolean(anchor)} onClose={() => setAnchor(null)}>
+        <MenuItem component={Link} href="/settings/notifications" onClick={() => setAnchor(null)}>
+          Notification settings
+        </MenuItem>
+        <Divider />
         <ListSubheader>Demo mode — view as</ListSubheader>
         {people.map((p) => (
           <MenuItem key={p.id} selected={p.id === me.user.id} onClick={() => switchTo(p.id)}>

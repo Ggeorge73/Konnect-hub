@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Alert, Card, CardContent, Divider, Stack, Typography } from '@mui/material';
 import GavelOutlined from '@mui/icons-material/GavelOutlined';
 import type { PendingGateReview } from '@/lib/data/gates';
@@ -11,6 +11,7 @@ import { GateDecisionButtons } from './GateDecisionButtons';
 export function PortalGateCard({ pending }: { pending: PendingGateReview[] }) {
   const router = useRouter();
   const [done, setDone] = useState<string | null>(null);
+  const approve = useSearchParams().get('approve'); // email deep link opens the approve dialog
   return (
     <Card component="section" aria-labelledby="gate-reviews-title">
       <CardContent>
@@ -50,6 +51,7 @@ export function PortalGateCard({ pending }: { pending: PendingGateReview[] }) {
                   <GateDecisionButtons
                     review={review}
                     gateLabel={`${label} for ${projectName}`}
+                    autoOpen={approve === review.id ? 'approved' : undefined}
                     onDone={() => {
                       setDone(`Decision recorded for ${projectName} — ${label}.`);
                       router.refresh();
