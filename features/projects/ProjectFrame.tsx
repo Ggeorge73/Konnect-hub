@@ -23,6 +23,8 @@ const TABS = [
   { label: 'List', seg: 'list' },
   { label: 'Timeline', seg: 'timeline' },
   { label: 'RAID', seg: 'raid' },
+  { label: 'Gates', seg: 'gates' },
+  { label: 'Deliverables', seg: 'deliverables' },
 ];
 
 export function ProjectFrame({ projectKey, children }: { projectKey: string; children: React.ReactNode }) {

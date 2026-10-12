@@ -4,6 +4,9 @@ import Grid from '@mui/material/Grid2';
 import { getRepo } from '@/lib/data';
 import { getSession } from '@/lib/session';
 import { PortalProjectCard } from '@/features/portal/PortalProjectCard';
+import { listPendingReviews } from '@/lib/data/gates';
+import { listAwaitingAcceptance } from '@/lib/data/deliverables';
+import { PortalGateCard } from '@/features/gates/PortalGateCard';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Client portal' };
@@ -15,15 +18,25 @@ export default async function Portal() {
   const bundles = await Promise.all(projects.map((p) => repo.getProjectBundle(s, p.key)));
   const items = await repo.listItems(s, {});
   const awaiting = items.filter((i) => i.status === 'client_review');
+  const deliverables = await listAwaitingAcceptance(s);
+  const pendingGates = s.user.role === 'client_sponsor' ? await listPendingReviews(s) : null;
   return (
     <Stack spacing={3}>
       <Typography variant="h1">Welcome, {s.user.name.split(' ')[0]}</Typography>
+      {pendingGates && <PortalGateCard pending={pendingGates} />}
       <Card>
         <CardContent>
           <Typography variant="h3" gutterBottom>
-            Needs your approval ({awaiting.length})
+            Needs your approval ({awaiting.length + deliverables.length})
           </Typography>
-          {awaiting.length === 0 ? (
+          {deliverables.map((d) => (
+            <Typography key={d.id} component="div" sx={{ py: 0.5 }}>
+              <Link href={`/portal/${d.projectKey}#deliverables`} style={{ color: 'inherit' }}>
+                Deliverable · {d.name}
+              </Link>
+            </Typography>
+          ))}
+          {awaiting.length + deliverables.length === 0 ? (
             <Typography color="text.secondary">Nothing is waiting on you right now.</Typography>
           ) : (
             awaiting.map((i) => (

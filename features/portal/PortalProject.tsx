@@ -20,7 +20,15 @@ import { STATUS_LABEL } from '@/lib/domain/workflow';
 import { ItemPanel } from '@/features/items/ItemPanel';
 import { ProjectBundleProvider } from '@/features/projects/ProjectFrame';
 
-export function PortalProject({ bundle, items }: { bundle: ProjectBundle; items: WorkItem[] }) {
+export function PortalProject({
+  bundle,
+  items,
+  children,
+}: {
+  bundle: ProjectBundle;
+  items: WorkItem[];
+  children?: React.ReactNode;
+}) {
   const path = usePathname();
   const visible = items.filter((i) => i.type !== 'epic');
   return (
@@ -30,6 +38,7 @@ export function PortalProject({ bundle, items }: { bundle: ProjectBundle; items:
         <Paper sx={{ p: 3, borderRadius: 4 }}>
           <GateTracker phases={bundle.phases} />
         </Paper>
+        {children}
         <Paper sx={{ borderRadius: 4 }}>
           <Typography variant="h3" sx={{ p: 2 }}>
             Shared work

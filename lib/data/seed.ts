@@ -16,6 +16,9 @@ import type {
   AuditEntry,
 } from '../domain/types';
 import { getTemplate } from '../domain/templates';
+import type { GateReview } from '../domain/gates';
+import type { Deliverable } from '../domain/deliverables';
+import { seedGates } from './seed-gates';
 
 export interface Db {
   orgs: Organization[];
@@ -30,6 +33,8 @@ export interface Db {
   comments: Comment[];
   activity: ActivityEvent[];
   audit: AuditEntry[];
+  gateReviews: GateReview[];
+  deliverables: Deliverable[];
 }
 
 export const DEMO_PROJECT_KEY = 'EHR';
@@ -625,5 +630,6 @@ export function buildSeed(): Db {
     comments,
     activity,
     audit: [],
+    ...seedGates(),
   };
 }
