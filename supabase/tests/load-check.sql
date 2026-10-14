@@ -48,8 +48,9 @@ begin
     best := least(best, pg_temp.kh_ms(pg_temp.kh_plan(q)));
   end loop;
   raise notice E'\n== % (% ms, best of 3: % ms) ==\n%', label, ms, best, plan;
+  -- An entry may list alternatives ("a|b"): any one index satisfies it.
   foreach ix in array must_use loop
-    if position(ix in plan) = 0 then
+    if not exists (select 1 from unnest(string_to_array(ix, '|')) a where position(a in plan) > 0) then
       raise exception 'PLAN CHECK FAILED: "%" does not use %', label, ix;
     end if;
   end loop;
@@ -172,7 +173,8 @@ begin
                              array['work_items_search_idx', 'work_items_key_lower_idx'], false);
     perform pg_temp.kh_check(who.label || ': comment candidates ("credentials")',
                              pg_temp.kh_comment_candidates('credentials'),
-                             array['comments_body_search_idx'], false);
+                             -- full text (at scale) or project narrowing (small CI dataset); never a seq scan
+                             array['comments_body_search_idx|comments_project_idx'], false);
 
     -- End-to-end timing as the signed-in user with RLS on: before (Sprint 4 query) and after.
     set local role authenticated;
