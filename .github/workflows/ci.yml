@@ -50,6 +50,13 @@ jobs:
       - run: bash supabase/tests/run-rls-tests.sh
       - name: Repo + domain (RAID, sprints, gates, deliverables) contract suites against Postgres + RLS
         run: bash supabase/tests/run-contract-tests.sh
+      # KH-46: search must hit its indexes with RLS on. Reduced scale (20k items) keeps this ~1 min;
+      # the full 2× run (400k) is `bash supabase/tests/run-load-tests.sh` (docs/performance.md).
+      - name: Search / board query plans on the load dataset (EXPLAIN, index scans + time budget)
+        run: bash supabase/tests/run-load-tests.sh
+        env:
+          KH_LOAD_TOTAL: '20000'
+          KH_LOAD_BIG: '5000'
 
   e2e:
     name: Playwright smoke + accessibility

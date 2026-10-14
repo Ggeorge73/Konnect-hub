@@ -1,6 +1,5 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -28,6 +27,7 @@ import {
 } from '@mui/material';
 import ViewColumnOutlined from '@mui/icons-material/ViewColumnOutlined';
 import BookmarkAddOutlined from '@mui/icons-material/BookmarkAddOutlined';
+import { replaceSearchParam } from '@/lib/client/url';
 import { prefetchItem, useBulkUpdate, useItems, useMe, usePeople, useUpdateItem } from '@/lib/client/api';
 import { useProjectBundle } from '@/features/projects/ProjectFrame';
 import { DEFAULT_STATUSES, PRIORITIES, STATUS_LABEL, ITEM_TYPES } from '@/lib/domain/workflow';
@@ -85,9 +85,6 @@ export function ItemTable() {
   const update = useUpdateItem(b.project.id);
   const bulk = useBulkUpdate(b.project.id);
   const qc = useQueryClient();
-  const router = useRouter();
-  const pathname = usePathname();
-  const params = useSearchParams();
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [saved, setSaved] = useState<View[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -114,11 +111,7 @@ export function ItemTable() {
   );
   const flat = groups.flatMap((g) => g.items);
 
-  const open = (key: string) => {
-    const sp = new URLSearchParams(params.toString());
-    sp.set('item', key);
-    router.replace(`${pathname}?${sp}`, { scroll: false });
-  };
+  const open = (key: string) => replaceSearchParam('item', key);
   useHotkeys({
     j: () => setCursor((c) => Math.min(c + 1, flat.length - 1)),
     k: () => setCursor((c) => Math.max(c - 1, 0)),

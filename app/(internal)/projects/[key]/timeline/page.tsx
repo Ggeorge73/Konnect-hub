@@ -1,10 +1,10 @@
 import { Suspense } from 'react';
-import { TimelineView } from '@/features/timeline/TimelineView';
+import { CriticalTimelineView } from '@/features/timeline/CriticalTimelineView';
 export const metadata = { title: 'Timeline' };
 export default function Page() {
   return (
     <Suspense>
-      <TimelineView />
+      <CriticalTimelineView />
     </Suspense>
   );
 }

@@ -1,6 +1,5 @@
 'use client';
-import { useCallback, useMemo, useState } from 'react';
-import { useRouter, useSearchParams, usePathname } from 'next/navigation';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -17,6 +16,7 @@ import {
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import type { KeyboardCoordinateGetter } from '@dnd-kit/core';
 import { useQueryClient } from '@tanstack/react-query';
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import {
   Alert,
   Box,
@@ -41,7 +41,7 @@ import Search from '@mui/icons-material/Search';
 import ViewAgendaOutlined from '@mui/icons-material/ViewAgendaOutlined';
 import ViewStreamOutlined from '@mui/icons-material/ViewStreamOutlined';
 import Add from '@mui/icons-material/Add';
-import { prefetchItem, useCreateItem, useItems, useMe, usePeople, useUpdateItem } from '@/lib/client/api';
+import { prefetchItem, useCreateItem, useMe, usePeople, useUpdateItem } from '@/lib/client/api';
 import { useProjectBundle } from '@/features/projects/ProjectFrame';
 import { DEFAULT_STATUSES, PRIORITIES, ITEM_TYPES } from '@/lib/domain/workflow';
 import { statusLabels } from '@/lib/domain/admin';
@@ -53,6 +53,15 @@ import { laneOf, positionAt, type Swimlane } from './ordering';
 import { EmptyState } from '@/components/ui/bits';
 import { useRealtime } from '@/features/realtime/useRealtime';
 import { CreateItemAction } from '@/components/ui/EmptyActions';
+import {
+  BOARD_PAGE_SIZE,
+  hasMore,
+  matchesCardQuery,
+  type BoardAncestor,
+  type BoardLimits,
+} from '@/lib/domain/board-page';
+import { useBoard } from './api';
+import { replaceSearchParam } from '@/lib/client/url';
 
 const COLUMN_STEP = 292; // column width + gap
 
@@ -72,10 +81,23 @@ const boardKeyboardCoordinates: KeyboardCoordinateGetter = (event, args) => {
 };
 
 const HIDDEN_BY_DEFAULT: ItemType[] = ['epic', 'feature'];
+const DEFAULT_TYPES = ITEM_TYPES.map((t) => t.id).filter((t) => !HIDDEN_BY_DEFAULT.includes(t));
+/** Columns longer than this render only the cards in view (KH-46). */
+const VIRTUALIZE_AT = 60;
+const NO_CARDS: WorkItem[] = [];
+
+/** Debounced copy of a value (server-side card filter). */
+function useDebounced<T>(value: T, ms = 250): T {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return v;
+}
 
 export function KanbanBoard() {
   const b = useProjectBundle();
-  const { data: items, isLoading } = useItems(b.project.id);
   useRealtime(b.project.id);
   const { data: people = [] } = usePeople();
   const { data: me } = useMe();
@@ -84,9 +106,6 @@ export function KanbanBoard() {
   const STATUS_LABEL = statusLabels(statuses);
   const update = useUpdateItem(b.project.id);
   const qc = useQueryClient();
-  const router = useRouter();
-  const pathname = usePathname();
-  const params = useSearchParams();
 
   const [lane, setLane] = useState<Swimlane>('none');
   const [compact, setCompact] = useState(false);
@@ -98,36 +117,70 @@ export function KanbanBoard() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingAccept, setPendingAccept] = useState<{ id: string; position: number } | null>(null);
+  const [limits, setLimits] = useState<BoardLimits>({});
 
   const editable = me ? canEditItems(me.user) : false;
   const activeSprint = b.sprints.find((s) => s.status === 'active');
+  // KH-46: the server pages the board (first BOARD_PAGE_SIZE cards per column, more on scroll)
+  // and applies the filters; the same filters also run here so typing feels instant.
+  const debouncedQ = useDebounced(q);
+  const {
+    data: page,
+    isLoading,
+    isFetching,
+  } = useBoard(
+    b.project.key,
+    b.project.id,
+    {
+      types: types.length ? types : DEFAULT_TYPES,
+      assignee: mine ? me?.user.id : assignee || undefined,
+      sprintId: sprintOnly ? activeSprint?.id : undefined,
+      q: debouncedQ,
+    },
+    limits,
+  );
+  const items = page?.items;
   const byId = useMemo(() => new Map((items ?? []).map((i) => [i.id, i])), [items]);
+  // Cards plus every epic/feature (for swimlanes by epic, even when those types are hidden).
+  const nodes = useMemo(() => {
+    const m = new Map<string, BoardAncestor>((page?.ancestors ?? []).map((a) => [a.id, a]));
+    for (const i of items ?? []) m.set(i.id, i);
+    return m;
+  }, [items, page?.ancestors]);
   const epicOf = useCallback(
-    (i: WorkItem): string | null => {
-      let cur: WorkItem | undefined = i;
+    (i: Pick<WorkItem, 'type' | 'id' | 'parentId'>): string | null => {
+      let cur: Pick<WorkItem, 'type' | 'id' | 'parentId'> | undefined = i;
       for (let n = 0; cur && n < 5; n++) {
         if (cur.type === 'epic') return cur.id;
-        cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+        cur = cur.parentId ? nodes.get(cur.parentId) : undefined;
       }
       return null;
     },
-    [byId],
+    [nodes],
+  );
+  const loadMore = useCallback(
+    (status: ItemStatus) =>
+      setLimits((l) => ({ ...l, [status]: (l[status] ?? BOARD_PAGE_SIZE) + BOARD_PAGE_SIZE })),
+    [],
   );
 
-  const visible = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    return (items ?? []).filter(
-      (i) =>
-        (types.length ? types.includes(i.type) : !HIDDEN_BY_DEFAULT.includes(i.type)) &&
-        (!mine || i.assigneeId === me?.user.id) &&
-        (!assignee || (i.assigneeId ?? 'unassigned') === assignee) &&
-        (!sprintOnly || (activeSprint && i.sprintId === activeSprint.id)) &&
-        (!t ||
-          i.title.toLowerCase().includes(t) ||
-          i.key.toLowerCase().includes(t) ||
-          i.labels.some((l) => l.includes(t))),
-    );
-  }, [items, types, mine, assignee, sprintOnly, q, me, activeSprint]);
+  const visible = useMemo(
+    () =>
+      (items ?? []).filter(
+        (i) =>
+          (types.length ? types.includes(i.type) : !HIDDEN_BY_DEFAULT.includes(i.type)) &&
+          (!mine || i.assigneeId === me?.user.id) &&
+          (!assignee || (i.assigneeId ?? 'unassigned') === assignee) &&
+          (!sprintOnly || (activeSprint && i.sprintId === activeSprint.id)) &&
+          matchesCardQuery(i, q),
+      ),
+    [items, types, mine, assignee, sprintOnly, q, me, activeSprint],
+  );
+  const visibleByStatus = useMemo(() => {
+    const m = new Map<ItemStatus, number>();
+    for (const i of visible) m.set(i.status, (m.get(i.status) ?? 0) + 1);
+    return m;
+  }, [visible]);
 
   const lanes = useMemo(() => {
     if (lane === 'none') return [{ id: 'all', label: '' }];
@@ -140,8 +193,8 @@ export function KanbanBoard() {
       }));
     }
     const ids = [...new Set(visible.map((i) => epicOf(i) ?? 'none'))];
-    return ids.map((id) => ({ id, label: id === 'none' ? 'No epic' : (byId.get(id)?.title ?? id) }));
-  }, [lane, visible, people, epicOf, byId]);
+    return ids.map((id) => ({ id, label: id === 'none' ? 'No epic' : (nodes.get(id)?.title ?? id) }));
+  }, [lane, visible, people, epicOf, nodes]);
 
   const cells = useMemo(() => {
     const m = new Map<string, WorkItem[]>();
@@ -159,14 +212,7 @@ export function KanbanBoard() {
     useSensor(KeyboardSensor, { coordinateGetter: boardKeyboardCoordinates }),
   );
 
-  const openItem = useCallback(
-    (key: string) => {
-      const sp = new URLSearchParams(params.toString());
-      sp.set('item', key);
-      router.replace(`${pathname}?${sp}`, { scroll: false });
-    },
-    [params, pathname, router],
-  );
+  const openItem = useCallback((key: string) => replaceSearchParam('item', key), []);
   const hover = useCallback((key: string) => prefetchItem(qc, key), [qc]);
 
   const resolveTarget = (overId: string): { laneId: string; status: ItemStatus } | null => {
@@ -328,7 +374,13 @@ export function KanbanBoard() {
         </ToggleButtonGroup>
       </Stack>
 
-      {visible.length === 0 && (items?.length ?? 0) === 0 ? (
+      {visible.length === 0 &&
+      (items?.length ?? 0) === 0 &&
+      !q &&
+      !types.length &&
+      !mine &&
+      !assignee &&
+      !sprintOnly ? (
         <Paper sx={{ borderRadius: 4 }}>
           <EmptyState
             title="The board is empty"
@@ -361,7 +413,7 @@ export function KanbanBoard() {
                       status={s.id}
                       label={s.label}
                       wipLimit={s.wipLimit}
-                      items={cells.get(`${l.id}::${s.id}`) ?? []}
+                      items={cells.get(`${l.id}::${s.id}`) ?? NO_CARDS}
                       people={people}
                       compact={compact}
                       onOpen={openItem}
@@ -372,7 +424,17 @@ export function KanbanBoard() {
                       }
                       showAdd={editable && l.id === lanes[0].id && (s.id === 'backlog' || s.id === 'ready')}
                       projectId={b.project.id}
-                      totalInStatus={visible.filter((i) => i.status === s.id).length}
+                      totalInStatus={
+                        // Server totals, unless the instant client filter is ahead of the server's.
+                        page && visible.length === page.items.length
+                          ? (page.totals[s.id] ?? 0)
+                          : (visibleByStatus.get(s.id) ?? 0)
+                      }
+                      // Only the column holding the dragged card re-renders when a drag starts.
+                      activeId={active?.status === s.id ? active.id : null}
+                      hasMore={Boolean(page && hasMore(page, s.id) && l.id === lanes[lanes.length - 1].id)}
+                      loadingMore={isFetching}
+                      onLoadMore={loadMore}
                     />
                   ))}
                 </Stack>
@@ -414,7 +476,7 @@ export function KanbanBoard() {
   );
 }
 
-function Column(props: {
+type ColumnProps = {
   laneId: string;
   status: ItemStatus;
   label: string;
@@ -428,14 +490,26 @@ function Column(props: {
   showAdd: boolean;
   projectId: string;
   totalInStatus: number;
-}) {
+  activeId: string | null;
+  /** True when the server has more cards for this column (KH-46 paging). */
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: (status: ItemStatus) => void;
+};
+
+/** Memoised: props are primitives or stable references, so a drag re-renders one column. */
+const Column = memo(function Column(props: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `${props.laneId}::${props.status}` });
+  const ids = useMemo(() => props.items.map((i) => i.id), [props.items]);
   const over = props.wipLimit !== undefined && props.totalInStatus > props.wipLimit;
+  const total = Math.max(props.totalInStatus, props.items.length);
+  const partial = total > props.items.length;
   return (
     <Paper
       ref={setNodeRef}
       component="section"
-      aria-label={`${props.label} column, ${props.items.length} items${over ? ', over WIP limit' : ''}`}
+      aria-label={`${props.label} column, ${total} items${partial ? `, ${props.items.length} loaded` : ''}${over ? ', over WIP limit' : ''}`}
+      data-loaded={props.items.length}
       sx={{
         width: 280,
         flexShrink: 0,
@@ -451,7 +525,7 @@ function Column(props: {
         </Typography>
         <Chip
           size="small"
-          label={props.wipLimit ? `${props.totalInStatus}/${props.wipLimit}` : props.items.length}
+          label={props.wipLimit ? `${props.totalInStatus}/${props.wipLimit}` : total}
           color={over ? 'warning' : 'default'}
           sx={{ height: 20 }}
           aria-label={over ? `Over WIP limit of ${props.wipLimit}` : undefined}
@@ -462,23 +536,90 @@ function Column(props: {
           </Typography>
         )}
       </Stack>
-      <SortableContext items={props.items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
-        <Box sx={{ minHeight: 60, maxHeight: '70vh', overflowY: 'auto', pr: 0.5 }}>
-          {props.items.map((i) => (
-            <BoardCard
-              key={i.id}
-              item={i}
-              assignee={props.people.find((p) => p.id === i.assigneeId)}
-              compact={props.compact}
-              onOpen={props.onOpen}
-              onHover={props.onHover}
-              disabled={!props.editable}
-            />
-          ))}
-        </Box>
+      <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+        <ColumnCards {...props} />
       </SortableContext>
+      {props.hasMore && (
+        <Button
+          size="small"
+          fullWidth
+          disabled={props.loadingMore}
+          onClick={() => props.onLoadMore(props.status)}
+          sx={{ mt: 0.5 }}
+          aria-label={`Load more ${props.label} cards, ${props.items.length} of ${total} shown`}
+        >
+          {props.loadingMore ? 'Loading…' : `Load more (${props.items.length} of ${total})`}
+        </Button>
+      )}
       {props.showAdd && <QuickAdd projectId={props.projectId} status={props.status} />}
     </Paper>
+  );
+});
+
+/**
+ * The cards of one column. Short columns render every card; long ones (KH-46) render only the
+ * cards in view with @tanstack/react-virtual, always keeping the card being dragged mounted so
+ * dnd-kit (pointer and keyboard) keeps working, and ask for more cards near the end.
+ */
+function ColumnCards(props: ColumnProps) {
+  const { items, activeId, hasMore: more, loadingMore, onLoadMore, status } = props;
+  const scroller = useRef<HTMLDivElement>(null);
+  const virtual = items.length > VIRTUALIZE_AT;
+  const activeIndex = activeId ? items.findIndex((i) => i.id === activeId) : -1;
+  const v = useVirtualizer({
+    count: items.length,
+    enabled: virtual,
+    getScrollElement: () => scroller.current,
+    estimateSize: () => (props.compact ? 54 : 110),
+    overscan: 8,
+    getItemKey: (i) => items[i].id,
+    rangeExtractor: (range) => {
+      const out = defaultRangeExtractor(range);
+      if (activeIndex >= 0 && !out.includes(activeIndex)) out.push(activeIndex);
+      return out.sort((a, b) => a - b);
+    },
+  });
+  const virtualItems = virtual ? v.getVirtualItems() : [];
+  const lastIndex = virtualItems.length ? virtualItems[virtualItems.length - 1].index : -1;
+  // Infinite scroll: fetch the next page when the last loaded cards come into view.
+  useEffect(() => {
+    if (virtual && more && !loadingMore && lastIndex >= items.length - 5) onLoadMore(status);
+  }, [virtual, more, loadingMore, onLoadMore, status, lastIndex, items.length]);
+
+  const card = (i: WorkItem) => (
+    <BoardCard
+      key={i.id}
+      item={i}
+      assignee={props.people.find((p) => p.id === i.assigneeId)}
+      compact={props.compact}
+      onOpen={props.onOpen}
+      onHover={props.onHover}
+      disabled={!props.editable}
+    />
+  );
+  return (
+    <Box
+      ref={scroller}
+      sx={{ minHeight: 60, maxHeight: '70vh', overflowY: 'auto', pr: 0.5 }}
+      data-virtualized={virtual || undefined}
+    >
+      {virtual ? (
+        <Box sx={{ position: 'relative', height: v.getTotalSize() }}>
+          {virtualItems.map((row) => (
+            <Box
+              key={row.key}
+              data-index={row.index}
+              ref={v.measureElement}
+              sx={{ position: 'absolute', top: row.start, left: 0, right: 0, display: 'flow-root' }}
+            >
+              {card(items[row.index])}
+            </Box>
+          ))}
+        </Box>
+      ) : (
+        items.map(card)
+      )}
+    </Box>
   );
 }
 
