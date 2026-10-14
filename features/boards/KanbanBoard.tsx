@@ -43,7 +43,9 @@ import ViewStreamOutlined from '@mui/icons-material/ViewStreamOutlined';
 import Add from '@mui/icons-material/Add';
 import { prefetchItem, useCreateItem, useItems, useMe, usePeople, useUpdateItem } from '@/lib/client/api';
 import { useProjectBundle } from '@/features/projects/ProjectFrame';
-import { DEFAULT_STATUSES, PRIORITIES, ITEM_TYPES, STATUS_LABEL } from '@/lib/domain/workflow';
+import { DEFAULT_STATUSES, PRIORITIES, ITEM_TYPES } from '@/lib/domain/workflow';
+import { statusLabels } from '@/lib/domain/admin';
+import { useWorkflow } from '@/features/admin/api';
 import { canEditItems, isClientRole } from '@/lib/domain/permissions';
 import type { ItemStatus, ItemType, WorkItem } from '@/lib/domain/types';
 import { BoardCard } from './BoardCard';
@@ -77,6 +79,9 @@ export function KanbanBoard() {
   useRealtime(b.project.id);
   const { data: people = [] } = usePeople();
   const { data: me } = useMe();
+  // ADM-01: the project's column labels and WIP limits (Admin console); default until loaded.
+  const statuses = useWorkflow(b.project.key).data ?? DEFAULT_STATUSES;
+  const STATUS_LABEL = statusLabels(statuses);
   const update = useUpdateItem(b.project.id);
   const qc = useQueryClient();
   const router = useRouter();
@@ -349,7 +354,7 @@ export function KanbanBoard() {
                   </Typography>
                 )}
                 <Stack direction="row" spacing={1.5} sx={{ minWidth: 'min-content' }}>
-                  {DEFAULT_STATUSES.map((s) => (
+                  {statuses.map((s) => (
                     <Column
                       key={s.id}
                       laneId={l.id}

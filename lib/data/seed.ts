@@ -15,7 +15,7 @@ import type {
   WorkItem,
   AuditEntry,
 } from '../domain/types';
-import { getTemplate } from '../domain/templates';
+import { getTemplate, type ProjectTemplate } from '../domain/templates';
 import { seedRaid } from './seed-raid';
 import type { PlanningState } from '../domain/sprints';
 import { datedEhrPhases, seedPlanning, SEED_TIMELINE_LINKS } from './seed-sprints';
@@ -29,6 +29,7 @@ import { seedCapacity } from './seed-capacity';
 import { seedPortal, type WorkspaceState } from './seed-portal';
 import { seedLedger, type LedgerState } from './seed-ledger';
 import { seedAi, type AiState } from './seed-ai';
+import { seedAdmin, type AdminState } from './seed-admin';
 
 export interface Db extends PulseDb {
   orgs: Organization[];
@@ -54,6 +55,7 @@ export interface Db extends PulseDb {
   workspace: WorkspaceState;
   ledger: LedgerState;
   ai: AiState;
+  admin: AdminState;
 }
 
 export const DEMO_PROJECT_KEY = 'EHR';
@@ -178,8 +180,13 @@ export const PROFILES: Profile[] = [
   },
 ];
 
-export function buildPhases(projectId: string, templateId: string, activeGate: number) {
-  const tpl = getTemplate(templateId);
+export function buildPhases(
+  projectId: string,
+  templateId: string,
+  activeGate: number,
+  template?: ProjectTemplate,
+) {
+  const tpl = template ?? getTemplate(templateId);
   const phases: Phase[] = [];
   const criteria: GateCriterion[] = [];
   for (const p of tpl.phases) {
@@ -659,5 +666,6 @@ export function buildSeed(): Db {
     ...seedPortal(),
     ...seedLedger(),
     ...seedAi(),
+    ...seedAdmin(),
   };
 }

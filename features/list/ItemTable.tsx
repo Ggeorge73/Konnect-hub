@@ -38,6 +38,7 @@ import { useHotkeys } from '@/components/shell/useHotkeys';
 import { sortItems, groupItems, type SortKey, type GroupKey } from './tableModel';
 import { CreateItemAction } from '@/components/ui/EmptyActions';
 import { ExportMenu } from '@/features/exports/ExportMenu';
+import { useCustomFields, useProjectFieldValues } from '@/features/admin/api';
 
 const COLUMNS: { id: string; label: string }[] = [
   { id: 'type', label: 'Type' },
@@ -94,6 +95,9 @@ export function ItemTable() {
   const [colAnchor, setColAnchor] = useState<HTMLElement | null>(null);
   const [q, setQ] = useState('');
   const editable = me ? canEditItems(me.user) : false;
+  const { data: fields = [] } = useCustomFields();
+  const { data: fieldValues = {} } = useProjectFieldValues(b.project.key, fields.length > 0);
+  const columns = [...COLUMNS, ...fields.map((f) => ({ id: `cf:${f.id}`, label: f.name }))];
 
   useEffect(() => setSaved(loadViews(b.project.key)), [b.project.key]);
 
@@ -143,6 +147,8 @@ export function ItemTable() {
     }
   };
   const show = (c: string) => view.cols.includes(c);
+  // ADM-01: workspace custom fields as optional columns (off until chosen).
+  const shownFields = fields.filter((f) => show(`cf:${f.id}`));
   const assignable = people.filter((p) => !isClientRole(p.role));
   const doBulk = (patch: Parameters<typeof bulk.mutate>[0]['patch']) =>
     bulk.mutate({ ids: [...selected], patch }, { onSuccess: () => setSelected(new Set()) });
@@ -209,7 +215,7 @@ export function ItemTable() {
           </IconButton>
         </Tooltip>
         <Menu anchorEl={colAnchor} open={Boolean(colAnchor)} onClose={() => setColAnchor(null)}>
-          {COLUMNS.map((c) => (
+          {columns.map((c) => (
             <MenuItem
               key={c.id}
               onClick={() =>
@@ -358,6 +364,9 @@ export function ItemTable() {
                 {show('due') && <TableCell>{sortable('due', 'Due')}</TableCell>}
                 {show('labels') && <TableCell>Labels</TableCell>}
                 {show('visibility') && <TableCell>Visibility</TableCell>}
+                {shownFields.map((f) => (
+                  <TableCell key={f.id}>{f.name}</TableCell>
+                ))}
               </TableRow>
             </TableHead>
             <TableBody>
@@ -466,6 +475,15 @@ export function ItemTable() {
                           <VisibilityChip visibility={i.visibility} showShared />
                         </TableCell>
                       )}
+                      {shownFields.map((f) => (
+                        <TableCell key={f.id}>
+                          {f.kind === 'number' || f.kind === 'date' ? (
+                            <Mono>{fieldValues[i.id]?.[f.id] ?? '—'}</Mono>
+                          ) : (
+                            (fieldValues[i.id]?.[f.id] ?? '—')
+                          )}
+                        </TableCell>
+                      ))}
                     </TableRow>
                   );
                 }),

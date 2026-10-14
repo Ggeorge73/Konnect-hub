@@ -50,6 +50,8 @@ import { useRealtime } from '@/features/realtime/useRealtime';
 import { PresenceAvatars } from '@/features/realtime/PresenceAvatars';
 import { WatchButton } from '@/features/notifications/WatchButton';
 import { ThreadSummary } from '@/features/ai/ThreadSummary';
+import { ItemCustomFields } from '@/features/admin/ItemCustomFields';
+import { Attachments, CommentFiles } from '@/features/files/Attachments';
 
 export function ItemPanel({ projectId }: { projectId: string }) {
   const params = useSearchParams();
@@ -329,6 +331,8 @@ function ItemDetailView({
 
         <LinkedRaid itemKey={item.key} />
         {!client && <ItemTime itemKey={item.key} />}
+        <ItemCustomFields itemKey={item.key} projectKey={bundle.project.key} />
+        <Attachments type="work_item" id={item.id} />
 
         <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mt: 2.5 }}>
           <Tab value="comments" label={`Comments (${data.comments.length})`} />
@@ -342,6 +346,7 @@ function ItemDetailView({
         {tab === 'comments' && (
           <Comments
             itemKey={item.key}
+            itemId={item.id}
             comments={data.comments}
             people={people}
             canPost={canComment(me.user)}
@@ -469,12 +474,14 @@ function AcceptanceCriteria({
 
 function Comments({
   itemKey,
+  itemId,
   comments,
   people,
   canPost,
   client,
 }: {
   itemKey: string;
+  itemId: string;
   comments: import('@/lib/domain/types').Comment[];
   people: import('@/lib/domain/types').Profile[];
   canPost: boolean;
@@ -525,6 +532,7 @@ function Comments({
               <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', mt: 0.5 }}>
                 {c.body}
               </Typography>
+              <CommentFiles itemId={itemId} commentId={c.id} commentVisibility={c.visibility} />
             </Box>
           </Stack>
         );

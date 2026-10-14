@@ -257,6 +257,7 @@ export const toProfile = (r: Row): Profile => {
   };
   // profile_rates is admin-only under RLS; anyone else gets null and no costRate key at all.
   if (r.cost_rate != null) p.costRate = Number(r.cost_rate);
+  if (r.deactivated_at) p.deactivatedAt = r.deactivated_at;
   return p;
 };
 
@@ -971,7 +972,8 @@ export async function loadSession(sql: Sql, userId: string): Promise<Session | n
       select p.*, r.cost_rate from public.profiles p
       left join public.profile_rates r on r.profile_id = p.id
       where p.id = ${userId}`;
-    if (!u) return null;
+    // ADM-01: a deactivated user has no session (RLS also gives them no role, 0017).
+    if (!u || u.deactivated_at) return null;
     const [o] = await tx`select * from public.organizations where id = ${u.org_id}`;
     if (!o) return null;
     return { user: toProfile(u), org: toOrg(o) };

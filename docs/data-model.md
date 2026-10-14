@@ -12,6 +12,7 @@ Schema: `supabase/migrations/0001_core.sql`. Demo data: `supabase/seed.sql`. Tes
 | Delivery      | `sprints`, `work_items` (key such as `EHR-7`, type, status, priority, visibility, `position`, labels, full-text `search_vector`), `acceptance_criteria`, `item_links`, `comments`, `attachments` |
 | RAID and time | `raid_entries` (score is probability times impact; `escalate` when 15 or more), `time_entries`, `allocations`, `status_reports`                                                                  |
 | Feeds         | `notifications`, `notification_prefs`, `activity` (project feed), `audit_log` (append-only)                                                                                                      |
+| Admin console | `templates` (built-in + custom), `project_workflows` (column labels, WIP limits), `custom_fields`, `custom_field_values`, `invites` (role + org), `workspace_settings` (0010, 0017)              |
 
 Every project-scoped table has its own `project_id` column. Composite foreign keys keep it consistent with the parent row, so RLS can filter on `project_id` directly without joins.
 
@@ -48,6 +49,10 @@ Restricted projects are hidden from internal users who are not US persons, even 
 - **Dashboard audit.** The project Lead reads the RAG-override, budget-sharing and PDF-export audit rows of projects they manage (`audit_log_dashboard_select`); every other audit row stays admin-only. The audit trigger records the client IP the app passes in `kh.client_ip`.
 - **Status reports.** `status_reports` holds the client copy once published; the internal working copy and internal RAG reason live in `status_report_drafts`, the budget section in `status_report_budgets` (Leads and Admins).
 - **Notifications.** Postgres writes insert `notifications` with the `visibility` of the content they describe, after the same rule as the demo store (actor, project access, client safety, channel `off`); the 0008 trigger refuses any internal notification to a client.
+- **Admin console (0017).** Roles must match the organization type (Konnector roles for Konnector users, client roles for client users); nobody changes their own role or deactivates themselves; only Admins set `profiles.deactivated_at`, and a deactivated user has no role, so RLS gives them nothing. Role changes and (de)activations are audited by triggers. Every `audit_log` insert records the client IP the app passes in `kh.client_ip`.
+- **Templates and workflows (0017).** `create_project_from_template()` reads gates and criteria from `templates` (built-ins read-only, custom ones Admin-made, archived ones unusable). `project_workflows` keeps the seven statuses in order; Accepted cannot be renamed or WIP-limited; Admins write, everyone on the project reads.
+- **Custom fields (0017).** Values are checked against the field type (number, date, select options); archived fields take no new values; clients read shared fields on shared items only.
+- **Attachments (0017).** 25 MB per file and a content-type allow-list in the table; a file on a comment must match the comment's parent and is internal when the comment is; clients see a file only when it, its parent and its comment are all visible to them, and they can only upload shared files.
 - **MFA flag.** After a TOTP verify, `mark_mfa_enabled()` sets the caller's own `profiles.mfa_enabled`. It needs an `aal2` JWT and never touches another row; direct updates of the flag stay blocked.
 
 ## Data path

@@ -22,10 +22,16 @@ export type InviteRole = (typeof INVITE_ROLES)[number];
 export interface Invite {
   id: string;
   email: string;
-  role: InviteRole;
-  status: 'pending';
+  /** The wizard invites Konnector roles; the Admin console (ADM-01) any role with an org. */
+  role: Role;
+  /** 'sent' once delivered through the Admin console (ADM-01). */
+  status: 'pending' | 'sent';
   invitedBy: string;
   createdAt: string;
+  /** The org the person joins; absent means Konnector (wizard invites). */
+  orgId?: string | null;
+  lastSentAt?: string | null;
+  sentCount?: number;
 }
 
 export const ONBOARDING_STEPS = [

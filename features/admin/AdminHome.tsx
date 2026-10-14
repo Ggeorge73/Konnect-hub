@@ -21,15 +21,72 @@ import Grid from '@mui/material/Grid2';
 import RocketLaunchOutlined from '@mui/icons-material/RocketLaunchOutlined';
 import DeleteOutline from '@mui/icons-material/DeleteOutline';
 import MailOutline from '@mui/icons-material/MailOutline';
+import PeopleAltOutlined from '@mui/icons-material/PeopleAltOutlined';
+import BusinessOutlined from '@mui/icons-material/BusinessOutlined';
+import ContentCopyOutlined from '@mui/icons-material/ContentCopyOutlined';
+import ViewWeekOutlined from '@mui/icons-material/ViewWeekOutlined';
+import TuneOutlined from '@mui/icons-material/TuneOutlined';
+import HistoryOutlined from '@mui/icons-material/HistoryOutlined';
 import { api, qk } from '@/lib/client/api';
 import { Mono } from '@/components/ui/bits';
 import { ROLE_LABEL } from '@/lib/domain/permissions';
 import { workspaceDisplayName, type Invite, type WorkspaceSettings } from '@/lib/domain/onboarding';
 
 /**
- * /admin: a simple card grid. Team Portal owns the setup, demo-project and invites cards; other
- * teams add their admin screens as more cards here.
+ * /admin: the Admin console (ADM-01, spec 3.11) as a card grid. Every screen behind these cards is
+ * Admin only and every change it makes is written to the audit log.
  */
+const CONSOLE: {
+  icon: typeof RocketLaunchOutlined;
+  title: string;
+  body: string;
+  href: string;
+  cta: string;
+}[] = [
+  {
+    icon: PeopleAltOutlined,
+    title: 'Users',
+    body: 'Konnector staff and client users: change roles, deactivate, re-send invites.',
+    href: '/admin/users',
+    cta: 'Manage users',
+  },
+  {
+    icon: BusinessOutlined,
+    title: 'Client organizations',
+    body: 'Add clients, rename them and upload their logos for the portal.',
+    href: '/admin/clients',
+    cta: 'Manage clients',
+  },
+  {
+    icon: ContentCopyOutlined,
+    title: 'Project templates',
+    body: 'The three built-in templates, and your own with tailored exit criteria and RAID categories.',
+    href: '/admin/templates',
+    cta: 'Manage templates',
+  },
+  {
+    icon: ViewWeekOutlined,
+    title: 'Workflows',
+    body: 'Rename board columns and set WIP limits per project. Accepted stays client-only.',
+    href: '/admin/workflows',
+    cta: 'Configure workflows',
+  },
+  {
+    icon: TuneOutlined,
+    title: 'Custom fields',
+    body: 'Text, number, date and select fields on every work item, internal or shared.',
+    href: '/admin/fields',
+    cta: 'Manage fields',
+  },
+  {
+    icon: HistoryOutlined,
+    title: 'Audit log',
+    body: 'Who changed what, when and from where. Append-only.',
+    href: '/admin/audit',
+    cta: 'Open the audit log',
+  },
+];
+
 export function AdminHome({
   workspace,
   demoProject,
@@ -46,6 +103,23 @@ export function AdminHome({
         <Grid size={{ xs: 12, md: 6, lg: 4 }}>
           <SetupCard workspace={workspace} />
         </Grid>
+        {CONSOLE.map((c) => (
+          <Grid key={c.href} size={{ xs: 12, md: 6, lg: 4 }}>
+            <AdminCard
+              icon={c.icon}
+              title={c.title}
+              actions={
+                <Button component={Link} href={c.href}>
+                  {c.cta}
+                </Button>
+              }
+            >
+              <Typography variant="body2" color="text.secondary">
+                {c.body}
+              </Typography>
+            </AdminCard>
+          </Grid>
+        ))}
         <Grid size={{ xs: 12, md: 6, lg: 4 }}>
           <DemoProjectCard demoProject={demoProject} />
         </Grid>
@@ -93,7 +167,7 @@ function SetupCard({ workspace }: { workspace: WorkspaceSettings }) {
   return (
     <AdminCard
       icon={RocketLaunchOutlined}
-      title="Workspace setup"
+      title="Branding and setup"
       actions={
         <Button variant="contained" component={Link} href="/onboarding">
           Re-run setup
@@ -105,7 +179,7 @@ function SetupCard({ workspace }: { workspace: WorkspaceSettings }) {
         {workspace.onboardedAt ? (
           <>
             Set up <Mono>{new Date(workspace.onboardedAt).toLocaleDateString()}</Mono>. Re-run the wizard to
-            rename the workspace, change the logo, add a client or invite people.
+            change the workspace name and logo, add a client or invite people.
           </>
         ) : (
           'Setup has not been finished yet. Run the wizard to name the workspace and add your first client.'
@@ -204,14 +278,14 @@ function InvitesCard({ invites }: { invites: Invite[] }) {
       icon={MailOutline}
       title="Pending invites"
       actions={
-        <Button component={Link} href="/onboarding">
+        <Button component={Link} href="/admin/invites">
           Invite people
         </Button>
       }
     >
       {invites.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
-          No invites are pending. Invite your delivery team from the setup wizard.
+          No invites are pending. Invite your team or client users by email.
         </Typography>
       ) : (
         <Stack component="ul" spacing={0.5} sx={{ m: 0, pl: 2 }}>

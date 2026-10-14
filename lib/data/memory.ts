@@ -19,6 +19,7 @@ import { GATE_NAMES } from '../domain/templates';
 import { recordStatusChange } from './pulse-history';
 import { onCommentAdded, onItemCreated, onItemUpdated } from './notify';
 import { restrictedRefusal, RESTRICTED_REFUSED } from '../domain/capacity';
+import { memoryTemplates } from './templates-admin';
 
 const g = globalThis as unknown as { __khDb?: Db };
 export const db = (): Db => (g.__khDb ??= buildSeed());
@@ -191,6 +192,9 @@ export const memoryRepo: Repo = {
     if (d.projects.some((p) => p.key === key)) throw new ValidationError(`Key ${key} is already used.`);
     if (!d.orgs.some((o) => o.id === input.clientOrgId && o.type === 'client'))
       throw new ValidationError('Unknown client.');
+    // ADM-01: built-in or Admin-made (custom) templates; archived ones can't start projects.
+    const template = memoryTemplates().find((t) => t.id === input.templateId && !t.archivedAt);
+    if (!template) throw new ValidationError(`Unknown template ${input.templateId}.`);
     // KH-36: restricted projects only allow U.S. persons, the lead included (mirrors the 0011 trigger).
     if (input.restricted && !d.profiles.find((u) => u.id === input.leadId)?.usPerson)
       throw new ValidationError('A restricted project needs a U.S.-person lead.');
@@ -214,7 +218,7 @@ export const memoryRepo: Repo = {
       nextItemNumber: 1,
       createdAt: now(),
     };
-    const { phases, criteria } = buildPhases(project.id, input.templateId, 1);
+    const { phases, criteria } = buildPhases(project.id, input.templateId, 1, template);
     d.projects.push(project);
     d.phases.push(...phases);
     d.criteria.push(...criteria);
