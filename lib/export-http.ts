@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { unstable_rethrow } from 'next/navigation';
 import { ZodError } from 'zod';
 import { errorStatus } from './data/errors';
-import { getSession } from './session';
+import { getApiSession } from './session';
 import { clientIp } from './domain/gates';
 import type { Session } from './domain/types';
 
@@ -19,7 +19,7 @@ export async function handleFile(
   fn: (session: Session) => Promise<{ body: Buffer | string; contentType: string; filename: string }>,
 ) {
   try {
-    const f = await fn(await getSession());
+    const f = await fn(await getApiSession());
     return new NextResponse(typeof f.body === 'string' ? f.body : new Uint8Array(f.body), {
       headers: {
         'content-type': f.contentType,

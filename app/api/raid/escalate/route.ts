@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { handle } from '@/lib/api';
 import { escalateStaleIssues } from '@/lib/data/raid';
+import { cronAuthorized } from '@/lib/security/cron';
 
 /**
  * RAID-02 stale-issue escalation.
@@ -12,8 +13,7 @@ import { escalateStaleIssues } from '@/lib/data/raid';
  * hand; it then only scans the projects they can see.
  */
 export async function POST(req: Request) {
-  const secret = process.env.CRON_SECRET;
-  if (secret && req.headers.get('x-cron-secret') === secret) {
+  if (cronAuthorized(req.headers)) {
     const r = await escalateStaleIssues(null);
     return NextResponse.json({ escalated: r.escalated.length, notified: r.notifications.length });
   }

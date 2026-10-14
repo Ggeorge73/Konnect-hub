@@ -2,6 +2,7 @@ import 'server-only';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { cookies } from 'next/headers';
 import { REAUTH_WINDOW_MS } from './domain/gates';
+import { serverSecret } from './security/secrets';
 
 /**
  * Fresh re-auth for approvals (CLAUDE.md §4: within 15 minutes).
@@ -11,7 +12,8 @@ import { REAUTH_WINDOW_MS } from './domain/gates';
  */
 export const REAUTH_COOKIE = 'kh_reauth';
 
-const secret = () => process.env.REAUTH_SECRET ?? 'dev-secret';
+/** REAUTH_SECRET; 'dev-secret' only in demo mode (lib/security/secrets.ts). */
+const secret = () => serverSecret('REAUTH_SECRET');
 const mac = (userId: string, iso: string, key: string) =>
   createHmac('sha256', key).update(`${userId}|${iso}`).digest('base64url');
 

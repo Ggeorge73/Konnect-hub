@@ -25,6 +25,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run format:check
       - run: npm test
+      - name: Production dependency audit (high and critical fail the build)
+        run: npm run audit:prod
 
   rls:
     name: RLS tenant-isolation + Postgres repo contract tests
@@ -48,6 +50,13 @@ jobs:
       - run: bash supabase/tests/run-rls-tests.sh
       - name: Repo + domain (RAID, sprints, gates, deliverables) contract suites against Postgres + RLS
         run: bash supabase/tests/run-contract-tests.sh
+      # KH-46: search must hit its indexes with RLS on. Reduced scale (20k items) keeps this ~1 min;
+      # the full 2× run (400k) is `bash supabase/tests/run-load-tests.sh` (docs/performance.md).
+      - name: Search / board query plans on the load dataset (EXPLAIN, index scans + time budget)
+        run: bash supabase/tests/run-load-tests.sh
+        env:
+          KH_LOAD_TOTAL: '20000'
+          KH_LOAD_BIG: '5000'
 
   e2e:
     name: Playwright smoke + accessibility
@@ -58,7 +67,24 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - run: npm run build
+      - name: Build (with dummy server secrets, so a leaked value would be caught)
+        run: npm run build
+        env:
+          RESEND_API_KEY: re_ci_dummy_resend_key_0001
+          ANTHROPIC_API_KEY: sk-ant-ci-dummy-anthropic-0001
+          SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key-0001
+          REAUTH_SECRET: ci-dummy-reauth-secret-0000000000000001
+          ICS_SECRET: ci-dummy-ics-secret-00000000000000000001
+          CRON_SECRET: ci-dummy-cron-secret-0001
+      - name: No server secrets in client bundles
+        run: npm run check:bundle-secrets
+        env:
+          RESEND_API_KEY: re_ci_dummy_resend_key_0001
+          ANTHROPIC_API_KEY: sk-ant-ci-dummy-anthropic-0001
+          SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-role-key-0001
+          REAUTH_SECRET: ci-dummy-reauth-secret-0000000000000001
+          ICS_SECRET: ci-dummy-ics-secret-00000000000000000001
+          CRON_SECRET: ci-dummy-cron-secret-0001
       - run: npm run test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()

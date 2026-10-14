@@ -1426,5 +1426,497 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 21. AI: per-project AI switch (off by default, Lead / Admin only, audited by trigger) and
+--     risk-suggestion decisions (internal only, append-only) (0014_ai_assist.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_audit0 bigint;
+begin
+  -- Everyone who can see the project reads the switch; other clients see nothing.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('ai_settings', format('project_id = %L and enabled', tests.ehr())), 1, 'sponsor reads the EHR switch');
+  perform tests.eq(tests.count('ai_settings', format('project_id = %L', tests.rvb())), 0, 'sponsor reads the Riverbend switch');
+  perform tests.eq(tests.count('ai_suggestion_decisions'), 0, 'clients never read suggestion decisions');
+  perform tests.throws(format('insert into public.ai_settings (project_id, enabled) values (%L, true)', tests.psr()),
+                       'sponsor turns AI on');
+  update public.ai_settings set enabled = false where project_id = tests.ehr();
+  perform tests.as_owner();
+  perform tests.ok((select enabled from public.ai_settings where project_id = tests.ehr()), 'sponsor update had no effect');
+
+  -- A team member cannot toggle, even on a project they work on.
+  perform tests.as_user('team');
+  perform tests.eq(tests.count('ai_settings', format('project_id = %L', tests.ehr())), 1, 'team member reads the EHR switch');
+  update public.ai_settings set enabled = false where project_id = tests.ehr();
+  perform tests.throws(format('insert into public.ai_settings (project_id, enabled) values (%L, true)', tests.psr()),
+                       'team member turns AI on');
+  perform tests.as_owner();
+  perform tests.ok((select enabled from public.ai_settings where project_id = tests.ehr()), 'team member update had no effect');
+
+  -- A Lead toggles only projects they lead (PSR is led by the Admin); the Admin toggles any.
+  perform tests.as_user('lead');
+  perform tests.throws(format('insert into public.ai_settings (project_id, enabled) values (%L, true)', tests.psr()),
+                       'lead turns AI on for a project they do not lead');
+  perform tests.as_owner();
+  v_audit0 := tests.count('audit_log', 'action = ''ai.settings.update''');
+  perform tests.as_user('lead');
+  update public.ai_settings set enabled = false, updated_by = tests.uid('admin') where project_id = tests.ehr();
+  perform tests.ok((select not enabled and updated_by = tests.uid('lead') from public.ai_settings where project_id = tests.ehr()),
+                   'lead turns EHR off; who is stamped from the session');
+  update public.ai_settings set enabled = false where project_id = tests.ehr(); -- no change: no audit
+  perform tests.as_user('admin');
+  insert into public.ai_settings (project_id, enabled) values (tests.psr(), true);
+  perform tests.eq(tests.count('audit_log', 'action = ''ai.settings.update''') - v_audit0, 2, 'two changes, two audit entries');
+  perform tests.eq(tests.count('audit_log', format('action = ''ai.settings.update'' and project_id = %L and actor_id = %L and after->>''aiEnabled'' = ''false''',
+                                                   tests.ehr(), tests.uid('lead'))), 1, 'lead''s change audited');
+  perform tests.eq(tests.count('audit_log', format('action = ''ai.settings.update'' and project_id = %L and actor_id = %L and after->>''aiEnabled'' = ''true''',
+                                                   tests.psr(), tests.uid('admin'))), 1, 'admin''s change audited');
+
+  -- Decisions: internal users on visible projects only, attributed to themselves, valid keys only.
+  perform tests.as_user('dev');
+  insert into public.ai_suggestion_decisions (project_id, signal_key, decision)
+  values (tests.ehr(), 'stalled:' || tests.item('EHR-7'), 'dismissed');
+  perform tests.ok((select decided_by = tests.uid('dev') from public.ai_suggestion_decisions
+                    where project_id = tests.ehr() and signal_key = 'stalled:' || tests.item('EHR-7')), 'decided_by defaults to the user');
+  perform tests.throws(format('insert into public.ai_suggestion_decisions (project_id, signal_key, decision) values (%L, %L, ''dismissed'')',
+                              tests.ehr(), 'stalled:' || tests.item('EHR-7')), 'same signal twice');
+  perform tests.throws(format('insert into public.ai_suggestion_decisions (project_id, signal_key, decision) values (%L, ''x; drop table y'', ''dismissed'')',
+                              tests.ehr()), 'malformed signal key');
+  perform tests.throws(format('insert into public.ai_suggestion_decisions (project_id, signal_key, decision, decided_by) values (%L, ''overdue:abc'', ''dismissed'', %L)',
+                              tests.ehr(), tests.uid('lead')), 'decision attributed to someone else');
+  perform tests.throws(format('update public.ai_suggestion_decisions set decision = ''accepted'' where project_id = %L', tests.ehr()),
+                       'decisions cannot be edited');
+  perform tests.as_user('assoc');
+  perform tests.eq(tests.count('ai_suggestion_decisions', format('project_id = %L', tests.rvb())), 0, 'associate sees unassigned project decisions');
+  perform tests.throws(format('insert into public.ai_suggestion_decisions (project_id, signal_key, decision) values (%L, ''overdue:abc'', ''dismissed'')',
+                              tests.rvb()), 'associate decides on an unassigned project');
+  perform tests.as_user('cmember');
+  perform tests.throws(format('insert into public.ai_suggestion_decisions (project_id, signal_key, decision) values (%L, ''overdue:abc'', ''dismissed'')',
+                              tests.ehr()), 'client records a decision');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 24. Portal: Admin console (users, invites, templates, workflows, custom fields) and
+--     attachments (0017_portal_admin_files.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_pid uuid;
+  v_field uuid;
+  v_att uuid;
+  v_peach uuid := 'a0000000-0000-4000-8000-000000000002';
+begin
+  -- Profiles: roles follow the org type; nobody changes their own role or deactivates themselves.
+  perform tests.as_user('admin');
+  perform tests.throws(format('update public.profiles set role = ''client_sponsor'' where id = %L', tests.uid('team')),
+                       'client role for a Konnector user');
+  perform tests.throws(format('update public.profiles set role = ''admin'' where id = %L', tests.uid('sponsor')),
+                       'Konnector role for a client user');
+  perform tests.throws(format('update public.profiles set role = ''team_member'' where id = %L', tests.uid('admin')),
+                       'admin changes their own role');
+  perform tests.throws(format('update public.profiles set deactivated_at = now() where id = %L', tests.uid('admin')),
+                       'admin deactivates themselves');
+  perform tests.as_user('cviewer');
+  perform tests.throws(format('update public.profiles set deactivated_at = now() where id = %L', tests.uid('cviewer')),
+                       'user deactivates themselves');
+  perform tests.as_user('admin');
+  update public.profiles set deactivated_at = now() where id = tests.uid('cviewer');
+  perform tests.eq(tests.count('audit_log', format('action = ''user.deactivate'' and entity_id = %L', tests.uid('cviewer'))), 1,
+                   'deactivation audited');
+  perform tests.as_user('cviewer');
+  perform tests.eq(tests.count('projects'), 0, 'a deactivated user sees no projects');
+  perform tests.eq(tests.count('work_items'), 0, 'a deactivated user sees no items');
+  perform tests.ok(public.current_profile_role() is null, 'a deactivated user has no role');
+
+  -- Audit rows record the client IP the app passes for the transaction.
+  perform tests.as_user('admin');
+  perform set_config('kh.client_ip', '203.0.113.7', true);
+  update public.profiles set role = 'client_member' where id = tests.uid('sponsor');
+  perform tests.eq(tests.count('audit_log', format('action = ''permission.role_change'' and entity_id = %L and ip = ''203.0.113.7''',
+                                                   tests.uid('sponsor'))), 1, 'role change audited with the client IP');
+  perform set_config('kh.client_ip', 'not-an-ip', true);
+  update public.profiles set role = 'client_sponsor' where id = tests.uid('sponsor');
+  perform set_config('kh.client_ip', '', true);
+
+  -- Invites carry an org; the role must fit it.
+  insert into public.invites (email, role, org_id) values ('new.member@peachtreeclinic.example', 'client_member', v_peach);
+  perform tests.throws(format('insert into public.invites (email, role, org_id) values (''x@peachtreeclinic.example'', ''team_member'', %L)', v_peach),
+                       'Konnector role invited into a client org');
+  update public.invites set sent_count = sent_count + 1, last_sent_at = now() where email = 'new.member@peachtreeclinic.example';
+  perform tests.eq(tests.count('invites', 'sent_count = 1'), 1, 'admin re-sends an invite');
+  perform tests.as_user('lead');
+  perform tests.eq(tests.count('invites'), 0, 'lead cannot see admin invites');
+
+  -- Templates: Konnector staff read; Admins add custom ones; built-ins are read-only; clients see none.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('templates'), 0, 'client sees templates');
+  perform tests.as_user('assoc');
+  perform tests.eq(tests.count('templates'), 3, 'staff see the 3 built-in templates');
+  perform tests.as_user('lead');
+  perform tests.throws($q$insert into public.templates (id, name, phases, raid_categories, created_by)
+                          select 'custom-lead', 'Lead template', phases, raid_categories, auth.uid() from public.templates where id = 'advisory'$q$,
+                       'lead creates a template');
+  perform tests.as_user('admin');
+  insert into public.templates (id, name, base_id, phases, raid_categories, created_by)
+  values ('custom-retainer', 'Managed Service Retainer', 'kanban-retainer',
+          '[{"gate": 1, "name": "Mobilize", "criteria": ["Charter signed"]},
+            {"gate": 2, "name": "Plan", "criteria": ["Service catalogue agreed"]},
+            {"gate": 3, "name": "Execute", "criteria": ["Quarterly review accepted", "SLA report shared"]},
+            {"gate": 4, "name": "Accept", "criteria": ["Runbook accepted"]},
+            {"gate": 5, "name": "Transition", "criteria": ["Handover signed"]}]', array['Service'], tests.uid('admin'));
+  perform tests.throws($q$insert into public.templates (id, name, phases, raid_categories, created_by)
+                          values ('custom-bad', 'Bad template', '[{"gate": 1, "name": "Mobilize", "criteria": []},
+                            {"gate": 2, "name": "Plan", "criteria": ["x2"]}, {"gate": 3, "name": "Execute", "criteria": ["x3"]},
+                            {"gate": 4, "name": "Accept", "criteria": ["x4"]}, {"gate": 5, "name": "Transition", "criteria": ["x5"]}]',
+                            array['Cost'], auth.uid())$q$, 'a gate without exit criteria');
+  perform tests.throws($q$insert into public.templates (id, name, phases, raid_categories, created_by)
+                          select 'custom-renamed', 'Renamed gates', jsonb_set(phases, '{0,name}', '"Kickoff"'), raid_categories, auth.uid()
+                          from public.templates where id = 'advisory'$q$, 'gate names are fixed');
+  update public.templates set name = 'Changed' where id = 'kdf-hybrid';
+  perform tests.ok((select name from public.templates where id = 'kdf-hybrid') <> 'Changed', 'built-in templates are read-only');
+  perform tests.throws($q$update public.templates set phases = (select phases from public.templates where id = 'advisory') where id = 'custom-retainer'$q$,
+                       'a template''s gates are immutable');
+  perform tests.as_user('lead');
+  v_pid := public.create_project_from_template('MSR', 'Managed service', v_peach, tests.uid('lead'), 'custom-retainer');
+  perform tests.eq(tests.count('gate_criteria', format('project_id = %L', v_pid)), 6, 'custom template seeds its 6 criteria');
+  perform tests.eq(tests.count('gate_criteria', format('project_id = %L and text = ''SLA report shared''', v_pid)), 1,
+                   'custom Execute criterion present');
+  perform tests.as_user('admin');
+  update public.templates set archived_at = now() where id = 'custom-retainer';
+  perform tests.as_user('lead');
+  perform tests.throws(format('select public.create_project_from_template(''MSR2'', ''x'', %L, %L, ''custom-retainer'')', v_peach, tests.uid('lead')),
+                       'archived template starts a project');
+
+  -- Workflows: readable on the project, Admin-only writes; Accepted and the column set are fixed.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('project_workflows'), 2, 'sponsor reads the workflows of the 2 Peachtree projects');
+  perform tests.as_user('lead');
+  update public.project_workflows set statuses = jsonb_set(statuses, '{0,label}', '"Inbox"') where project_id = tests.ehr();
+  perform tests.ok((select statuses -> 0 ->> 'label' from public.project_workflows where project_id = tests.ehr()) = 'Backlog',
+                   'lead cannot change a workflow');
+  perform tests.as_user('admin');
+  update public.project_workflows set statuses = jsonb_set(jsonb_set(statuses, '{2,label}', '"Building"'), '{2,wipLimit}', '3')
+  where project_id = tests.ehr();
+  perform tests.ok((select statuses -> 2 ->> 'label' from public.project_workflows where project_id = tests.ehr()) = 'Building',
+                   'admin renames a column');
+  perform tests.throws(format($q$update public.project_workflows set statuses = jsonb_set(statuses, '{6,label}', '"Signed off"') where project_id = %L$q$, tests.ehr()),
+                       'Accepted renamed');
+  perform tests.throws(format($q$update public.project_workflows set statuses = jsonb_set(statuses, '{6,wipLimit}', '5') where project_id = %L$q$, tests.ehr()),
+                       'Accepted WIP-limited');
+  perform tests.throws(format($q$update public.project_workflows set statuses = statuses - 6 where project_id = %L$q$, tests.ehr()),
+                       'Accepted removed');
+  perform tests.throws(format($q$update public.project_workflows set statuses = jsonb_set(statuses, '{1,label}', '"Backlog"') where project_id = %L$q$, tests.ehr()),
+                       'duplicate column names');
+  perform tests.throws(format($q$update public.project_workflows set statuses = jsonb_set(statuses, '{2,wipLimit}', '0') where project_id = %L$q$, tests.ehr()),
+                       'WIP limit below 1');
+
+  -- Custom fields: clients see shared fields and their values on shared items only.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('custom_fields'), 1, 'sponsor sees only the shared field');
+  perform tests.eq(tests.count('custom_field_values', format('item_id = %L', tests.item('EHR-9'))), 1,
+                   'sponsor sees the shared value, not the internal Cost centre');
+  perform tests.throws(format($q$insert into public.custom_field_values (project_id, item_id, field_id, value)
+                                 values (%L, %L, %L, 'Decatur')$q$, tests.ehr(), tests.item('EHR-6'), md5('cf_site')::uuid),
+                       'client writes a field value');
+  perform tests.as_user('lead');
+  perform tests.throws($q$insert into public.custom_fields (name, kind) values ('Lead field', 'text')$q$, 'lead defines a field');
+  perform tests.as_user('admin');
+  insert into public.custom_fields (name, kind, visibility) values ('Contract line', 'number', 'shared') returning id into v_field;
+  perform tests.throws($q$insert into public.custom_fields (name, kind) values ('Choice', 'select')$q$, 'select field without options');
+  perform tests.throws($q$insert into public.custom_fields (name, kind) values ('site', 'text')$q$, 'duplicate field name');
+  perform tests.throws(format('update public.custom_fields set kind = ''text'' where id = %L', v_field), 'field kind changes');
+  perform tests.as_user('dev');
+  insert into public.custom_field_values (project_id, item_id, field_id, value) values (tests.ehr(), tests.item('EHR-12'), v_field, '42');
+  perform tests.throws(format($q$insert into public.custom_field_values (project_id, item_id, field_id, value)
+                                 values (%L, %L, %L, 'forty')$q$, tests.ehr(), tests.item('EHR-6'), v_field), 'non-number value');
+  perform tests.throws(format($q$insert into public.custom_field_values (project_id, item_id, field_id, value)
+                                 values (%L, %L, %L, 'Atlanta')$q$, tests.ehr(), tests.item('EHR-6'), md5('cf_site')::uuid),
+                       'select value not among the options');
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('custom_field_values', format('item_id = %L', tests.item('EHR-12'))), 0,
+                   'sponsor sees a shared field''s value on an internal item');
+  perform tests.as_user('admin');
+  update public.custom_fields set archived_at = now() where id = v_field;
+  perform tests.as_user('dev');
+  perform tests.throws(format($q$update public.custom_field_values set value = '7' where field_id = %L$q$, v_field),
+                       'value written to an archived field');
+
+  -- Attachments: limits, client uploads always shared, files on internal comments always internal.
+  perform tests.as_user('dev');
+  insert into public.attachments (project_id, entity_type, entity_id, file_name, storage_path, mime_type, size_bytes, uploaded_by, visibility, bucket)
+  values (tests.ehr(), 'work_item', tests.item('EHR-9'), 'internal.pdf', 'x/internal.pdf', 'application/pdf', 100, tests.uid('dev'), 'internal', 'kh-org-test');
+  perform tests.throws(format($q$insert into public.attachments (project_id, entity_type, entity_id, file_name, storage_path, mime_type, size_bytes, uploaded_by)
+                                 values (%L, 'work_item', %L, 'big.pdf', 'x/big.pdf', 'application/pdf', 26214401, %L)$q$,
+                              tests.ehr(), tests.item('EHR-9'), tests.uid('dev')), 'file over 25 MB');
+  perform tests.throws(format($q$insert into public.attachments (project_id, entity_type, entity_id, file_name, storage_path, mime_type, size_bytes, uploaded_by)
+                                 values (%L, 'work_item', %L, 'run.exe', 'x/run.exe', 'application/x-msdownload', 10, %L)$q$,
+                              tests.ehr(), tests.item('EHR-9'), tests.uid('dev')), 'file type not allowed');
+  perform tests.as_user('lead');
+  insert into public.attachments (project_id, entity_type, entity_id, comment_id, file_name, storage_path, mime_type, size_bytes, uploaded_by, visibility)
+  values (tests.ehr(), 'work_item', tests.item('EHR-7'), md5('cm_2')::uuid, 'internal-comment.pdf', 'x/c.pdf', 'application/pdf', 10, tests.uid('lead'), 'shared')
+  returning id into v_att;
+  perform tests.ok((select visibility = 'internal' from public.attachments where id = v_att), 'file on an internal comment is internal');
+  perform tests.throws(format($q$insert into public.attachments (project_id, entity_type, entity_id, comment_id, file_name, storage_path, mime_type, size_bytes, uploaded_by)
+                                 values (%L, 'work_item', %L, %L, 'wrong.pdf', 'x/w.pdf', 'application/pdf', 10, %L)$q$,
+                              tests.ehr(), tests.item('EHR-9'), md5('cm_2')::uuid, tests.uid('lead')), 'comment on another item');
+  insert into public.attachments (project_id, entity_type, entity_id, comment_id, file_name, storage_path, mime_type, size_bytes, uploaded_by, visibility)
+  values (tests.ehr(), 'work_item', tests.item('EHR-7'), md5('cm_1')::uuid, 'shared-comment.pdf', 'x/s.pdf', 'application/pdf', 10, tests.uid('lead'), 'shared');
+
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('attachments', format('entity_id = %L', tests.item('EHR-9'))), 1,
+                   'sponsor sees the shared file on EHR-9, not the internal one');
+  perform tests.eq(tests.count('attachments', format('entity_id = %L', tests.item('EHR-7'))), 1,
+                   'sponsor sees the file on the shared comment only');
+  perform tests.eq(tests.count('attachments', format('id = %L', v_att)), 0, 'sponsor sees a file on an internal comment');
+  perform tests.throws(format($q$insert into public.attachments (project_id, entity_type, entity_id, file_name, storage_path, mime_type, size_bytes, uploaded_by, visibility)
+                                 values (%L, 'work_item', %L, 'c.pdf', 'x/c2.pdf', 'application/pdf', 10, %L, 'internal')$q$,
+                              tests.ehr(), tests.item('EHR-9'), tests.uid('sponsor')), 'client uploads an internal file');
+  perform tests.throws(format($q$insert into public.attachments (project_id, entity_type, entity_id, comment_id, file_name, storage_path, mime_type, size_bytes, uploaded_by, visibility)
+                                 values (%L, 'work_item', %L, %L, 'c.pdf', 'x/c3.pdf', 'application/pdf', 10, %L, 'shared')$q$,
+                              tests.ehr(), tests.item('EHR-7'), md5('cm_2')::uuid, tests.uid('sponsor')), 'client attaches to an internal comment');
+  insert into public.attachments (project_id, entity_type, entity_id, file_name, storage_path, mime_type, size_bytes, uploaded_by, visibility)
+  values (tests.ehr(), 'work_item', tests.item('EHR-9'), 'sign-off.pdf', 'x/so.pdf', 'application/pdf', 10, tests.uid('sponsor'), 'shared');
+  perform tests.as_user('cviewer');
+  perform tests.throws(format($q$insert into public.attachments (project_id, entity_type, entity_id, file_name, storage_path, mime_type, size_bytes, uploaded_by, visibility)
+                                 values (%L, 'work_item', %L, 'v.pdf', 'x/v.pdf', 'application/pdf', 10, %L, 'shared')$q$,
+                              tests.ehr(), tests.item('EHR-9'), tests.uid('cviewer')), 'viewer uploads');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('attachments', format('project_id = %L', tests.ehr())), 0, 'riverbend sees no Peachtree files');
+  perform tests.eq(tests.count('custom_field_values', format('project_id = %L', tests.ehr())), 0, 'riverbend sees no Peachtree values');
+  perform tests.eq(tests.count('project_workflows', format('project_id = %L', tests.ehr())), 0, 'riverbend sees no Peachtree workflow');
+  perform tests.as_user('team');
+  delete from public.attachments where id = v_att;
+  perform tests.as_owner();
+  perform tests.eq(tests.count('attachments', format('id = %L', v_att)), 1, 'only the uploader or an admin deletes a file');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 23. Shield: security review hardening (0016_shield_hardening.sql, KH-47 SEC-03).
+--     Self-written audit rows are server-timestamped, the "View as client" preview trail is
+--     Admin-only and append-only, and a client of one org reads nothing of another org's.
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_at timestamptz;
+  v_t text;
+begin
+  -- A user cannot backdate (or future-date) an audit entry they append for themselves.
+  perform tests.as_user('sponsor');
+  insert into public.audit_log (actor_id, action, entity, entity_id, at)
+  values (tests.uid('sponsor'), 'test.backdate', 'test', 'x', '2001-01-01T00:00:00Z');
+  insert into public.audit_log (actor_id, action, entity, entity_id, at)
+  values (tests.uid('sponsor'), 'test.future', 'test', 'y', '2099-01-01T00:00:00Z');
+  perform tests.as_user('admin');
+  select at into v_at from public.audit_log where action = 'test.backdate';
+  perform tests.ok(v_at = now(), 'backdated audit row stamped with server time');
+  select at into v_at from public.audit_log where action = 'test.future';
+  perform tests.ok(v_at = now(), 'future-dated audit row stamped with server time');
+
+  -- The owner (seed, restores) and security-definer code keep the time they pass.
+  perform tests.as_owner();
+  insert into public.audit_log (actor_id, action, entity, at)
+  values (tests.uid('admin'), 'test.owner_time', 'test', '2020-02-02T00:00:00Z');
+  perform tests.ok((select at from public.audit_log where action = 'test.owner_time') = '2020-02-02T00:00:00Z',
+                   'owner-written audit row keeps its time');
+
+  -- Preview start/stop (written by the app as the Admin) are readable by Admins only and immutable.
+  perform tests.as_user('admin');
+  insert into public.audit_log (actor_id, action, entity, entity_id, after)
+  values (tests.uid('admin'), 'preview.start', 'preview', 'peachtree', '{"role":"client_sponsor"}');
+  insert into public.audit_log (actor_id, action, entity, entity_id, before)
+  values (tests.uid('admin'), 'preview.stop', 'preview', 'peachtree', '{"role":"client_sponsor"}');
+  perform tests.eq(tests.count('audit_log', 'action like ''preview.%'''), 2, 'admin reads the preview trail');
+  perform tests.throws('update public.audit_log set after = null where action = ''preview.start''',
+                       'admin edits a preview entry');
+  perform tests.throws('delete from public.audit_log where action like ''preview.%''', 'admin deletes the preview trail');
+  foreach v_t in array array['lead', 'team', 'assoc', 'sponsor', 'cmember', 'cviewer', 'rsponsor'] loop
+    perform tests.as_user(v_t);
+    perform tests.eq(tests.count('audit_log', 'action like ''preview.%'''), 0, v_t || ' reads the preview trail');
+  end loop;
+  -- Nobody can write a preview entry in an Admin's name.
+  perform tests.as_user('lead');
+  perform tests.throws(format('insert into public.audit_log (actor_id, action, entity) values (%L, ''preview.start'', ''preview'')',
+                              tests.uid('admin')), 'lead forges a preview entry for the admin');
+
+  -- Every-route test, database side: the Riverbend sponsor gets zero Peachtree (EHR) rows from
+  -- every project-scoped table, whatever the visibility.
+  perform tests.as_user('rsponsor');
+  foreach v_t in array array['work_items', 'comments', 'phases', 'gate_criteria', 'gate_reviews', 'deliverables',
+                             'deliverable_items', 'acceptance_criteria', 'sprints', 'raid_entries', 'time_entries',
+                             'allocations', 'status_reports', 'activity', 'project_members', 'project_financials'] loop
+    perform tests.eq(tests.count(v_t, format('project_id = %L', tests.ehr())), 0, 'rsponsor reads EHR ' || v_t);
+  end loop;
+  perform tests.eq(tests.count('projects', format('id = %L', tests.ehr())), 0, 'rsponsor reads the EHR project');
+end $$;
+rollback;
+
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_id uuid;
+  v_other uuid;
+  v_ac0 bigint;
+begin
+  -- Only internal people log time; associates only on assigned projects; quarter hours only.
+  perform tests.as_user('assoc');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.rvb(), tests.item('RVB-2'), tests.uid('assoc')), 'associate logs on an unassigned project');
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('sponsor')), 'client logs time');
+  perform tests.as_user('lead');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('sponsor')), 'lead logs time for a client user');
+  v_ac0 := public.project_actual_cost(tests.ehr(), '2027-01-31');
+
+  perform tests.as_user('dev');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 0.3)',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('dev')), 'non-quarter hours');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.ehr(), tests.item('RVB-3'), tests.uid('dev')), 'item from another project');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours, status) values (%L, %L, %L, ''2027-01-13'', 1, ''approved'')',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('dev')), 'insert pre-approved time');
+  insert into public.time_entries (project_id, item_id, user_id, entry_date, hours, note)
+  values (tests.ehr(), tests.item('EHR-7'), tests.uid('dev'), '2027-01-13', 2.5, 'Dry-run') returning id into v_id;
+  perform tests.ok((select status = 'draft' from public.time_entries where id = v_id), 'new time is a draft');
+  perform tests.ok(public.item_logged_hours(tests.item('EHR-7')) >= 2.5, 'item total includes the new entry');
+  perform tests.throws('select public.project_actual_cost(tests.ehr(), ''2027-01-31'')', 'team member reads actual cost');
+  -- The owner cannot approve their own time.
+  perform tests.throws(format('update public.time_entries set status = ''approved'' where id = %L', v_id), 'owner approves own time');
+  update public.time_entries set status = 'submitted' where id = v_id;
+  perform tests.ok((select submitted_at is not null from public.time_entries where id = v_id), 'submitted_at set');
+  perform tests.throws(format('update public.time_entries set hours = 3 where id = %L', v_id), 'owner edits submitted time');
+  perform tests.throws(format('delete from public.time_entries where id = %L', v_id), 'owner deletes submitted time');
+
+  -- Other team members never see someone else's time; clients see none and get no item totals.
+  perform tests.as_user('team');
+  perform tests.eq(tests.count('time_entries', format('id = %L', v_id)), 0, 'team member sees a colleague''s time');
+  perform tests.ok(public.item_logged_hours(tests.item('EHR-7')) >= 2.5, 'team member sees the item total');
+  update public.time_entries set status = 'approved' where id = v_id;  -- invisible row: no effect
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.item_logged_hours(%L)', tests.item('EHR-7')), 'client reads logged hours');
+  perform tests.eq(tests.count('time_entries'), 0, 'client sees time entries');
+
+  -- The Lead rejects with a reason; the owner edits (back to draft) and resubmits; the Lead approves.
+  perform tests.as_user('lead');
+  perform tests.ok((select status = 'submitted' from public.time_entries where id = v_id), 'team member could not approve');
+  perform tests.throws(format('update public.time_entries set status = ''rejected'' where id = %L', v_id), 'reject without a reason');
+  update public.time_entries set status = 'rejected', reject_reason = 'Split by ticket' where id = v_id;
+  perform tests.ok((select decided_by = tests.uid('lead') from public.time_entries where id = v_id), 'decided_by is the lead');
+  perform tests.as_user('dev');
+  update public.time_entries set hours = 2.5, note = 'Dry-run (EHR-7 only)' where id = v_id;
+  perform tests.ok((select status = 'draft' from public.time_entries where id = v_id), 'editing rejected time makes a draft');
+  update public.time_entries set status = 'submitted' where id = v_id;
+  perform tests.as_user('lead');
+  update public.time_entries set status = 'approved' where id = v_id;
+  perform tests.eq(public.project_actual_cost(tests.ehr(), '2027-01-31') - v_ac0, 23750,
+                   'approved 2.5 h x $95 adds $237.50 to actual cost');
+  perform tests.eq(public.project_actual_cost(tests.ehr(), '2027-01-12') - v_ac0, 0, 'cost counts from the entry date');
+  perform tests.eq(tests.count('profile_rates'), 0, 'lead still cannot read cost rates');
+
+  -- Approved time is locked for everyone, even the table owner.
+  perform tests.throws(format('update public.time_entries set hours = 1 where id = %L', v_id), 'lead edits approved time');
+  perform tests.throws(format('update public.time_entries set status = ''rejected'', reject_reason = ''x'' where id = %L', v_id),
+                       'lead rejects approved time');
+  perform tests.as_user('dev');
+  perform tests.throws(format('delete from public.time_entries where id = %L', v_id), 'owner deletes approved time');
+  perform tests.as_owner();
+  perform tests.throws(format('delete from public.time_entries where id = %L', v_id), 'table owner deletes approved time');
+
+  -- Decisions are audited in the database.
+  perform tests.eq(tests.count('audit_log', format('entity = ''time_entry'' and entity_id = %L and action = ''time.reject''', v_id)), 1,
+                   'rejection audited');
+  perform tests.eq(tests.count('audit_log', format('entity = ''time_entry'' and entity_id = %L and action = ''time.approve'' and actor_id = %L',
+                                                   v_id, tests.uid('lead'))), 1, 'approval audited');
+
+  -- A Lead cannot approve time on a project they don't lead (PSR is led by the Admin).
+  perform tests.as_user('team');
+  insert into public.time_entries (project_id, item_id, user_id, entry_date, hours)
+  values (tests.psr(), tests.item('PSR-1'), tests.uid('team'), '2027-01-13', 1) returning id into v_other;
+  update public.time_entries set status = 'submitted' where id = v_other;
+  perform tests.as_user('lead');
+  perform tests.eq(tests.count('time_entries', format('id = %L', v_other)), 0, 'lead sees time on a project they don''t lead');
+  perform tests.as_user('admin');
+  update public.time_entries set status = 'approved' where id = v_other;
+  perform tests.ok((select status = 'approved' from public.time_entries where id = v_other), 'admin approves any project');
+
+  -- Permission changes are audited: role changes and project membership.
+  perform tests.as_user('admin');
+  update public.profiles set role = 'delivery_lead' where id = tests.uid('team');
+  perform tests.eq(tests.count('audit_log', format('action = ''permission.role_change'' and entity_id = %L and after->>''role'' = ''delivery_lead''',
+                                                   tests.uid('team'))), 1, 'role change audited');
+  perform tests.as_user('lead');
+  insert into public.project_members (project_id, user_id, project_role) values (tests.rvb(), tests.uid('team'), 'QA');
+  update public.project_members set project_role = 'QA lead' where project_id = tests.rvb() and user_id = tests.uid('team');
+  delete from public.project_members where project_id = tests.rvb() and user_id = tests.uid('team');
+  perform tests.as_user('admin');
+  perform tests.eq(tests.count('audit_log', format('entity = ''project_member'' and entity_id = %L and project_id = %L and actor_id = %L',
+                                                   tests.uid('team'), tests.rvb(), tests.uid('lead'))), 3,
+                   'member add / change / remove audited');
+end $$;
+rollback;
+
+-- ---------------------------------------------------------------------------
+-- 22. Flow: indexed search candidates (0015_flow_search_indexes.sql). The SECURITY DEFINER
+--     functions must return exactly what the work_items / comments select policies allow:
+--     no other client's rows, no internal rows for clients, no deleted items, and nothing for anon.
+-- ---------------------------------------------------------------------------
+begin;
+do $$
+declare
+  n bigint;
+begin
+  -- Client Sponsor (Peachtree): own shared items only.
+  perform tests.as_user('sponsor');
+  perform tests.eq((select count(*) from public.search_work_item_ids('permit')), 0, 'sponsor finds Riverbend items');
+  perform tests.eq((select count(*) from public.search_work_item_ids('RVB-1')), 0, 'sponsor finds a Riverbend key');
+  perform tests.eq((select count(*) from public.search_work_item_ids('pharmacy')), 0, 'sponsor finds an internal epic');
+  select count(*) into n from public.search_work_item_ids('conversion');
+  perform tests.ok(n > 0, 'sponsor finds shared EHR items');
+  perform tests.eq((select count(*) from public.search_work_item_ids('conversion') s
+                    join public.work_items w on w.id = s.id), n, 'every candidate is readable through RLS');
+  perform tests.eq((select count(*) from public.search_work_item_ids('conversion', 50, null, null, 'internal')), 0,
+                   'sponsor filters to internal items');
+  perform tests.eq((select count(*) from public.search_comment_ids('thursday')), 0, 'sponsor finds an internal comment');
+  perform tests.eq((select count(*) from public.search_comment_ids('duplicates')), 1, 'sponsor finds a shared comment');
+
+  -- Client Sponsor (Riverbend): the mirror image.
+  perform tests.as_user('rsponsor');
+  perform tests.ok((select count(*) from public.search_work_item_ids('permit')) > 0, 'rsponsor finds own items');
+  perform tests.eq((select count(*) from public.search_work_item_ids('security')), 0, 'rsponsor finds an internal task');
+  perform tests.eq((select count(*) from public.search_work_item_ids('conversion')), 0, 'rsponsor finds Peachtree items');
+  perform tests.eq((select count(*) from public.search_comment_ids('duplicates')), 0, 'rsponsor finds Peachtree comments');
+
+  -- Internal users see internal rows on their projects; the key arm matches exactly.
+  perform tests.as_user('lead');
+  perform tests.ok((select count(*) from public.search_work_item_ids('pharmacy')) > 0, 'lead finds the internal epic');
+  perform tests.eq((select count(*) from public.search_work_item_ids('EHR-7') s where s.id = tests.item('EHR-7')), 1,
+                   'search by key');
+  perform tests.eq((select count(*) from public.search_comment_ids('thursday')), 1, 'lead finds the internal comment');
+  perform tests.eq((select count(*) from public.search_work_item_ids('conversion', 50, array['epic'], null, null)), 0,
+                   'type filter applies before the limit');
+
+  -- Soft-deleted items disappear from search for everyone.
+  update public.work_items set deleted_at = now() where id = tests.item('EHR-7');
+  perform tests.eq((select count(*) from public.search_work_item_ids('EHR-7') s where s.id = tests.item('EHR-7')), 0,
+                   'deleted item in search');
+  perform tests.eq((select count(*) from public.search_comment_ids('duplicates')), 0, 'comment on a deleted item');
+
+  -- Signed-out callers cannot call the functions at all.
+  perform tests.as_owner();
+  perform tests.ok(not has_function_privilege('anon', 'public.search_work_item_ids(text, integer, text[], text[], text)',
+                                              'execute'), 'anon cannot execute search_work_item_ids');
+  perform tests.ok(not has_function_privilege('anon', 'public.search_comment_ids(text, integer)', 'execute'),
+                   'anon cannot execute search_comment_ids');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;

@@ -18,5 +18,8 @@ kh_db_create "kh_contract_$$"
 kh_db_load_all
 
 cd "$KH_SUPA_DIR/.."
-echo "-- running lib/data/postgres.test.ts lib/data/capacity-postgres.test.ts"
-TEST_DATABASE_URL="$TEST_URL" npx vitest run lib/data/postgres.test.ts lib/data/capacity-postgres.test.ts "$@"
+# Every Postgres-backed suite: lib/data/postgres.test.ts plus any lib/data/*-postgres.test.ts, so a
+# new store's contract can't be left out of CI by forgetting to list it here.
+PG_TESTS=(lib/data/postgres.test.ts lib/data/*-postgres.test.ts)
+echo "-- running ${PG_TESTS[*]}"
+TEST_DATABASE_URL="$TEST_URL" npx vitest run "${PG_TESTS[@]}" "$@"

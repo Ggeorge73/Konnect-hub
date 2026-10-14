@@ -12,6 +12,7 @@ import type {
 import type {
   ActivityEvent,
   Comment,
+  Impersonation,
   Organization,
   Profile,
   Project,
@@ -46,6 +47,8 @@ export interface Me {
   user: Profile;
   org: Organization;
   auth: 'supabase' | 'demo';
+  /** KH-47: set while an Admin previews the portal as a client (read-only). */
+  impersonation?: Impersonation | null;
 }
 export const useMe = () => useQuery({ queryKey: qk.me, queryFn: () => api<Me>('/api/session') });
 export const useProjects = () =>
@@ -86,6 +89,8 @@ export const prefetchItem = (qc: ReturnType<typeof useQueryClient>, key: string)
     staleTime: 10_000,
   });
 
+type ItemsCache = WorkItem[] | { items: WorkItem[] };
+
 /** Optimistic item update shared by the board, list and side panel. */
 export function useUpdateItem(projectId: string) {
   const qc = useQueryClient();
@@ -94,14 +99,17 @@ export function useUpdateItem(projectId: string) {
       api<WorkItem>(`/api/items/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     onMutate: async ({ id, patch }) => {
       await qc.cancelQueries({ queryKey: qk.items(projectId) });
-      const prev = qc.getQueryData<WorkItem[]>(qk.items(projectId));
+      // Every cache under qk.items(projectId): the full list (WorkItem[]) and board pages ({ items }).
+      const prev = qc.getQueriesData<ItemsCache>({ queryKey: qk.items(projectId) });
       const { offlineAcceptanceNote: _n, ...fields } = patch;
-      qc.setQueryData<WorkItem[]>(qk.items(projectId), (old) =>
-        old?.map((i) => (i.id === id || i.key === id ? { ...i, ...fields } : i)),
+      const apply = (list: WorkItem[]) =>
+        list.map((i) => (i.id === id || i.key === id ? { ...i, ...fields } : i));
+      qc.setQueriesData<ItemsCache>({ queryKey: qk.items(projectId) }, (old) =>
+        !old ? old : Array.isArray(old) ? apply(old) : { ...old, items: apply(old.items) },
       );
       return { prev };
     },
-    onError: (_e, _v, ctx) => ctx?.prev && qc.setQueryData(qk.items(projectId), ctx.prev),
+    onError: (_e, _v, ctx) => ctx?.prev.forEach(([key, data]) => qc.setQueryData(key, data)),
     onSettled: (data) => {
       qc.invalidateQueries({ queryKey: qk.items(projectId) });
       qc.invalidateQueries({ queryKey: qk.projects });

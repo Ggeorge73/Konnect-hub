@@ -18,6 +18,7 @@ import { EmptyState, RagChip } from '@/components/ui/bits';
 import { REPORT_SECTIONS } from '@/lib/domain/reports';
 import type { ReportSummary, ReportView } from '@/lib/data/reports';
 import { fmtWeek } from './bits';
+import { sanitizeHtml } from '@/lib/security/sanitize-html';
 
 /** Portal section: status reports the delivery team has published. */
 export function PortalReportsSection({
@@ -100,7 +101,7 @@ export function PortalReport({ report }: { report: ReportView }) {
           <Typography variant="h3" component="h2" id={`portal-section-${s.id}`} sx={{ mb: 1 }}>
             {s.label}
           </Typography>
-          <Box dangerouslySetInnerHTML={{ __html: report.sections[s.id]! }} />
+          <Box dangerouslySetInnerHTML={{ __html: sanitizeHtml(report.sections[s.id]!) }} />
         </Paper>
       ))}
     </Stack>

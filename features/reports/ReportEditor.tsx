@@ -26,6 +26,7 @@ import type { Rag } from '@/lib/domain/types';
 import { useReport, useUpdateReport } from './api';
 import { fmtWeek, ReportStatusChip } from './bits';
 import { PublishDialog } from './PublishDialog';
+import { ReportAiDraft } from '@/features/ai/ReportAiDraft';
 
 const RAG_OPTIONS: { id: Rag; label: string }[] = [
   { id: 'green', label: 'Green · On track' },
@@ -105,6 +106,11 @@ export function ReportEditor({ id }: { id: string }) {
               onBlur={(e) => e.target.value !== r.ragReason && update.mutate({ ragReason: e.target.value })}
             />
           </Stack>
+        )}
+        {r.canEdit && (
+          <Box sx={{ mt: 2 }}>
+            <ReportAiDraft report={r} />
+          </Box>
         )}
         {!r.canEdit && r.ragReason && (
           <Typography sx={{ mt: 1.5 }}>

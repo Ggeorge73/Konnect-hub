@@ -91,5 +91,9 @@ export const decideCriterion = (
   });
 
 export const reauthStatus = () => api<{ fresh: boolean; expiresAt: string | null }>('/api/reauth');
-export const reauth = (email: string) =>
-  api<{ ok: true; expiresAt: string }>('/api/reauth', { method: 'POST', body: JSON.stringify({ email }) });
+/** Demo mode: email only. With Supabase Auth the password is verified too (KH-47). */
+export const reauth = (email: string, password?: string) =>
+  api<{ ok: true; expiresAt: string }>('/api/reauth', {
+    method: 'POST',
+    body: JSON.stringify(password ? { email, password } : { email }),
+  });

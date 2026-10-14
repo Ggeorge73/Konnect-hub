@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getSession } from '@/lib/session';
+import { getApiSession } from '@/lib/session';
 import { errorStatus } from '@/lib/data/errors';
 import { getDashboard, recordDashboardExport } from '@/lib/data/insight';
 import { clientIp } from '@/lib/domain/gates';
@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 /** DASH-01: one-page PDF of the executive dashboard, redacted for the viewer. Every export is audited. */
 export async function GET(req: Request, { params }: { params: Promise<{ key: string }> }) {
   try {
-    const session = await getSession();
+    const session = await getApiSession();
     const view = await getDashboard(session, (await params).key);
     const bytes = await renderDashboardPdf(view, session.user.name);
     await recordDashboardExport(

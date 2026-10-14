@@ -257,6 +257,7 @@ export const toProfile = (r: Row): Profile => {
   };
   // profile_rates is admin-only under RLS; anyone else gets null and no costRate key at all.
   if (r.cost_rate != null) p.costRate = Number(r.cost_rate);
+  if (r.deactivated_at) p.deactivatedAt = r.deactivated_at;
   return p;
 };
 
@@ -453,7 +454,7 @@ export async function audit(
             ${jsonParam(tx, before)}::jsonb, ${jsonParam(tx, after)}::jsonb)`;
 }
 
-function filterSql(tx: Tx, f: ItemFilters) {
+export function filterSql(tx: Tx, f: ItemFilters) {
   const parts = [];
   if (f.projectId) parts.push(tx`and w.project_id = ${uuidOr(f.projectId)}`);
   if (f.type?.length) parts.push(tx`and w.type::text = any(${textArray(f.type)}::text[])`);
@@ -906,20 +907,27 @@ export function createPostgresRepo(sql: Sql): Repo {
           select id, key, name from public.projects
           where deleted_at is null and (name ilike ${like} or lower(key) = lower(${term}))
           order by name`;
+        // KH-46: candidates come from SECURITY DEFINER functions (0015) that can use the GIN
+        // indexes under RLS and apply the same visibility rules; the rows themselves are still
+        // read through the RLS-protected tables, so RLS has the final say on every result.
+        const arr = (xs?: string[]) => (xs?.length ? textArray(xs) : null);
         const items = await tx`
           select w.id, w.key, w.title, w.status, p.key as project_key, p.name as project_name
-          from public.work_items w join public.projects p on p.id = w.project_id
+          from public.search_work_item_ids(${term}, 50, ${arr(f.type)}::text[], ${arr(f.status)}::text[],
+                                           ${f.visibility ?? null}::text) m
+          join public.work_items w on w.id = m.id
+          join public.projects p on p.id = w.project_id
           where w.deleted_at is null
-            ${filterSql(tx, { ...f, q: term })}
-          order by ts_rank(w.search_vector, websearch_to_tsquery('english', ${term})) desc, w.position
+            ${filterSql(tx, { ...f, q: undefined })}
+          order by m.rank desc, w.position
           limit 50`;
         const comments = await tx`
           select c.id, c.body, w.key as item_key, p.key as project_key
-          from public.comments c
+          from public.search_comment_ids(${term}, 20) m
+          join public.comments c on c.id = m.id
           join public.work_items w on w.id = c.entity_id and w.deleted_at is null
           join public.projects p on p.id = c.project_id
           where c.entity_type = 'work_item'
-            and to_tsvector('english', c.body) @@ websearch_to_tsquery('english', ${term})
           order by c.created_at desc
           limit 20`;
         const out: SearchResult[] = [
@@ -971,7 +979,8 @@ export async function loadSession(sql: Sql, userId: string): Promise<Session | n
       select p.*, r.cost_rate from public.profiles p
       left join public.profile_rates r on r.profile_id = p.id
       where p.id = ${userId}`;
-    if (!u) return null;
+    // ADM-01: a deactivated user has no session (RLS also gives them no role, 0017).
+    if (!u || u.deactivated_at) return null;
     const [o] = await tx`select * from public.organizations where id = ${u.org_id}`;
     if (!o) return null;
     return { user: toProfile(u), org: toOrg(o) };

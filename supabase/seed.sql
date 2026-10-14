@@ -382,4 +382,28 @@ insert into public.status_report_budgets (report_id, project_id, html) values
   (md5('sr_ehr_1')::uuid, 'c0000000-0000-4000-8000-000000000001', '<p>Budget at completion: $480,000 (fixed fee).</p>'),
   (md5('sr_rvb_1')::uuid, 'c0000000-0000-4000-8000-000000000002', '<p>Budget at completion: $310,000 (time and materials).</p>');
 
+-- AI assist (0014_ai_assist.sql; mirrors lib/data/seed-ai.ts): on for EHR, off for RVB; one
+-- dismissed Riverbend suggestion. ----------------------------------------------------------------
+insert into public.ai_settings (project_id, enabled, updated_by) values
+  ('c0000000-0000-4000-8000-000000000001', true, 'b0000000-0000-4000-8000-000000000002'),
+  ('c0000000-0000-4000-8000-000000000002', false, 'b0000000-0000-4000-8000-000000000002');
+insert into public.ai_suggestion_decisions (project_id, signal_key, decision, decided_by, decided_at) values
+  ('c0000000-0000-4000-8000-000000000002', 'stalled:' || md5('wi_rvb_3')::uuid, 'dismissed',
+   'b0000000-0000-4000-8000-000000000002', '2026-10-09T15:00:00Z');
+-- Admin console + attachments (0017_portal_admin_files.sql; mirrors lib/data/seed-admin.ts) ------
+-- Every seeded project starts on the default workflow (the app treats a missing row the same way).
+insert into public.project_workflows (project_id, statuses)
+select id, '[{"id": "backlog", "label": "Backlog"}, {"id": "ready", "label": "Ready"},
+             {"id": "in_progress", "label": "In Progress", "wipLimit": 6}, {"id": "in_review", "label": "In Review", "wipLimit": 4},
+             {"id": "client_review", "label": "Client Review"}, {"id": "done", "label": "Done"},
+             {"id": "accepted", "label": "Accepted"}]'::jsonb
+from _p;
+insert into public.custom_fields (id, name, kind, options, visibility, position, created_at) values
+  (md5('cf_site')::uuid, 'Site', 'select', '{Midtown,Decatur,Marietta,County HQ}', 'shared', 1, '2026-08-03T09:00:00Z'),
+  (md5('cf_cost_centre')::uuid, 'Cost centre', 'text', '{}', 'internal', 2, '2026-08-03T09:00:00Z');
+insert into public.custom_field_values (project_id, item_id, field_id, value) values
+  ('c0000000-0000-4000-8000-000000000001', md5('wi_ehr_9')::uuid, md5('cf_site')::uuid, 'Midtown'),
+  ('c0000000-0000-4000-8000-000000000001', md5('wi_ehr_9')::uuid, md5('cf_cost_centre')::uuid, 'CC-4410'),
+  ('c0000000-0000-4000-8000-000000000002', md5('wi_rvb_2')::uuid, md5('cf_site')::uuid, 'County HQ');
+
 commit;

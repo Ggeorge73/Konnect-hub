@@ -23,8 +23,10 @@ import { UserMenu } from '@/components/shell/UserMenu';
 import { NotificationsBell } from '@/components/shell/NotificationsBell';
 import type { InboxEntry } from '@/lib/domain/portal';
 import type { PortalBranding } from '@/lib/data/portal';
+import type { Impersonation } from '@/lib/domain/types';
+import { PreviewBanner } from '@/features/admin/PreviewBanner';
 import { useInbox } from './api';
-import { createAccessibleTheme } from './theme';
+import { createKonnectorTheme } from '@/lib/theme';
 
 /** The portal keeps its own theme choice (light by default) so it never flips the internal app. */
 export const PORTAL_MODE_KEY = 'kh_portal_mode';
@@ -89,15 +91,18 @@ export function PortalShell({
   orgName,
   branding,
   inbox,
+  preview,
 }: {
   children: React.ReactNode;
   orgName: string;
   userName: string;
   branding?: PortalBranding;
   inbox?: InboxEntry[];
+  /** KH-47: an Admin's read-only "View as client" preview. */
+  preview?: Impersonation;
 }) {
   const { mode, toggle } = usePortalMode();
-  const theme = useMemo(() => createAccessibleTheme(mode), [mode]);
+  const theme = useMemo(() => createKonnectorTheme(mode), [mode]);
   const workspaceName = branding?.workspaceName ?? APP_NAME;
   return (
     <ThemeProvider theme={theme}>
@@ -114,6 +119,7 @@ export function PortalShell({
         >
           Skip to content
         </Box>
+        {preview && <PreviewBanner preview={preview} />}
         <AppBar
           position="sticky"
           color="transparent"

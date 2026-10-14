@@ -3,10 +3,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
+  FormControlLabel,
+  MenuItem,
   Paper,
+  Select,
   Skeleton,
   Snackbar,
   Stack,
+  Switch,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
@@ -28,12 +32,16 @@ import {
   barAriaLabel,
   buildTimeline,
   dragDays,
+  floatLabel,
   formatDate,
   noCriticalPath,
   shiftSpan,
   type Bar,
   type CriticalPathFn,
+  type CriticalPathResult,
+  type CriticalScope,
   type TimelineInput,
+  type TimelineModel,
   type Zoom,
 } from './layout';
 import { useReschedule, useTimeline } from './api';
@@ -41,6 +49,9 @@ import { useReschedule, useTimeline } from './api';
 const LABEL_W = 240;
 const SPRINT_COLOR = '#3B82F6';
 const EPIC_COLOR = ITEM_TYPES.find((t) => t.id === 'epic')!.color;
+/** Critical-path emphasis: colour AND a dash-dot outline pattern, so it never relies on colour alone. */
+const CRITICAL_COLOR = RAG_COLORS.red;
+const CRITICAL_DASH = '7 3 1.5 3';
 const srOnly = {
   position: 'absolute',
   width: 1,
@@ -58,6 +69,8 @@ export function TimelineView({ criticalPath }: { criticalPath?: CriticalPathFn }
   const reschedule = useReschedule(b.project.key);
   const [zoom, setZoom] = useState<Zoom>('month');
   const [msg, setMsg] = useState<string | null>(null);
+  const [showCritical, setShowCritical] = useState(false);
+  const [scope, setScope] = useState<CriticalScope>('execute');
 
   if (error) return <Alert severity="error">{error.message}</Alert>;
   if (isLoading || !data) return <Skeleton variant="rounded" height={360} />;
@@ -69,7 +82,33 @@ export function TimelineView({ criticalPath }: { criticalPath?: CriticalPathFn }
           Timeline
         </Typography>
         <Box sx={{ flex: 1 }} />
-        <Legend />
+        {criticalPath && (
+          <Stack direction="row" spacing={1} alignItems="center">
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={showCritical}
+                  onChange={(e) => setShowCritical(e.target.checked)}
+                  data-testid="critical-toggle"
+                />
+              }
+              label="Critical path"
+            />
+            {showCritical && (
+              <Select
+                size="small"
+                value={scope}
+                onChange={(e) => setScope(e.target.value as CriticalScope)}
+                inputProps={{ 'aria-label': 'Critical path scope' }}
+                data-testid="critical-scope"
+              >
+                <MenuItem value="execute">Execute phase</MenuItem>
+                <MenuItem value="all">All phases</MenuItem>
+              </Select>
+            )}
+          </Stack>
+        )}
+        <Legend critical={showCritical && Boolean(criticalPath)} />
         <ToggleButtonGroup
           size="small"
           exclusive
@@ -94,7 +133,8 @@ export function TimelineView({ criticalPath }: { criticalPath?: CriticalPathFn }
         data={data}
         zoom={zoom}
         today={todayIso()}
-        criticalPath={criticalPath}
+        criticalPath={showCritical ? criticalPath : undefined}
+        criticalScope={scope}
         onReschedule={(bar, days) => {
           const span = shiftSpan(bar, days);
           reschedule.mutate(
@@ -119,7 +159,7 @@ export function TimelineView({ criticalPath }: { criticalPath?: CriticalPathFn }
   );
 }
 
-function Legend() {
+function Legend({ critical }: { critical?: boolean }) {
   const item = (swatch: React.ReactNode, label: string) => (
     <Stack direction="row" spacing={0.5} alignItems="center">
       <svg width="18" height="14" aria-hidden>
@@ -135,6 +175,21 @@ function Legend() {
       {item(<GateGlyph x={9} y={7} passed size={6} />, 'Gate passed')}
       {item(<GateGlyph x={9} y={7} passed={false} size={6} />, 'Gate upcoming')}
       {item(<line x1="9" y1="0" x2="9" y2="14" stroke={RAG_COLORS.red} strokeWidth="2" />, 'Today')}
+      {critical &&
+        item(
+          <rect
+            x="1.5"
+            y="2.5"
+            width="15"
+            height="9"
+            rx="3"
+            fill={EPIC_COLOR}
+            stroke={CRITICAL_COLOR}
+            strokeWidth="2"
+            strokeDasharray="4 2 1 2"
+          />,
+          'Critical path',
+        )}
     </Stack>
   );
 }
@@ -171,21 +226,31 @@ export function Timeline({
   zoom,
   today,
   onReschedule,
-  criticalPath = noCriticalPath,
+  criticalPath,
+  criticalScope = 'execute',
 }: {
   data: TimelineData;
   zoom: Zoom;
   today: string;
   onReschedule: (bar: Bar, days: number) => void;
-  /** Extension point: ids of bars on the critical path get emphasised (Sprint 5). */
+  /** Extension point: bars and arrows on the critical path get emphasised; off when omitted. */
   criticalPath?: CriticalPathFn;
+  criticalScope?: CriticalScope;
 }) {
   const theme = useTheme();
   const reduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const input: TimelineInput = data;
   const model = useMemo(() => buildTimeline(input, zoom, today), [input, zoom, today]);
-  const critical = useMemo(() => criticalPath(model, input), [criticalPath, model, input]);
   const [drag, setDrag] = useState<{ id: string; startX: number; dx: number } | null>(null);
+  // Live recompute while dragging: analyse the model with the dragged bar at its snapped position.
+  const dragId = drag?.id;
+  const dragShift = drag ? dragDays(drag.dx, zoom) : 0;
+  const analysed = useMemo(() => shiftedModel(model, dragId, dragShift), [model, dragId, dragShift]);
+  const cpOn = Boolean(criticalPath);
+  const critical = useMemo(
+    () => (criticalPath ?? noCriticalPath)(analysed, input, { scope: criticalScope }),
+    [criticalPath, analysed, input, criticalScope],
+  );
   const editable = data.canEdit;
   const scroller = useRef<HTMLDivElement>(null);
   const todayX = model.today?.x;
@@ -206,292 +271,357 @@ export function Timeline({
   };
 
   return (
-    <Box sx={{ display: 'flex', border: 1, borderColor: 'divider', borderRadius: 3, overflow: 'hidden' }}>
-      {/* Row labels (HTML, sticky) */}
-      <Box
-        sx={{ width: LABEL_W, flexShrink: 0, borderRight: 1, borderColor: 'divider' }}
-        aria-hidden
-        data-testid="timeline-labels"
-      >
-        <Box sx={{ height: AXIS_H }} />
-        <RowLabel h={PHASE_ROW_H} strong>
-          Phases and gates
-        </RowLabel>
-        <RowLabel h={MILESTONE_ROW_H} strong>
-          Milestones
-        </RowLabel>
-        {model.bars.map((bar) => (
-          <RowLabel key={bar.id} h={ROW_H}>
-            {bar.kind === 'epic' ? `${bar.key} ${bar.label}` : bar.label}
-          </RowLabel>
-        ))}
-      </Box>
-
-      <Box ref={scroller} sx={{ overflowX: 'auto', flex: 1 }} data-testid="timeline-scroll">
+    <>
+      {cpOn && <CriticalSummary result={critical} scope={criticalScope} />}
+      <Box sx={{ display: 'flex', border: 1, borderColor: 'divider', borderRadius: 3, overflow: 'hidden' }}>
+        {/* Row labels (HTML, sticky) */}
         <Box
-          component="svg"
-          width={model.width}
-          height={model.height}
-          role="group"
-          aria-label={`Timeline for ${data.project.name}, ${formatDate(model.start)} to ${formatDate(model.end)}`}
-          aria-describedby={editable ? 'timeline-help' : undefined}
-          sx={{
-            display: 'block',
-            fontFamily: theme.typography.fontFamily,
-            '& .tl-bar': { outline: 'none', cursor: editable ? 'grab' : 'default' },
-            '& .tl-bar:focus-visible .tl-bar-rect': { stroke: theme.palette.secondary.main, strokeWidth: 3 },
-            '& .tl-bar:focus-visible .tl-bar-focus': { opacity: 1 },
-          }}
+          sx={{ width: LABEL_W, flexShrink: 0, borderRight: 1, borderColor: 'divider' }}
+          aria-hidden
+          data-testid="timeline-labels"
         >
-          <defs>
-            <marker
-              id="tl-arrow"
-              viewBox="0 0 10 10"
-              refX="9"
-              refY="5"
-              markerWidth="7"
-              markerHeight="7"
-              orient="auto-start-reverse"
-            >
-              <path d="M 0 0 L 10 5 L 0 10 z" fill={muted} />
-            </marker>
-          </defs>
-
-          {/* Phase bands */}
-          {model.phases.map((p, i) => (
-            <g key={p.id} data-testid="phase-band" data-gate={p.gate}>
-              <title>
-                {`Phase ${p.gate} ${p.name}: ${formatDate(p.start)} to ${formatDate(p.end)}${p.derived ? ' (estimated from project dates)' : ''}`}
-              </title>
-              <rect
-                x={p.x}
-                y={AXIS_H}
-                width={p.w}
-                height={model.height - AXIS_H}
-                fill={i % 2 === 0 ? bandFill : 'transparent'}
-              />
-              <line x1={p.x} x2={p.x} y1={AXIS_H} y2={model.height} stroke={grid} />
-              <text
-                x={p.x + 8}
-                y={AXIS_H + 18}
-                fontSize={12}
-                fontWeight={600}
-                fill={theme.palette.text.primary}
-              >
-                {p.w > 70 ? `${p.gate}. ${p.name}` : p.gate}
-              </text>
-            </g>
+          <Box sx={{ height: AXIS_H }} />
+          <RowLabel h={PHASE_ROW_H} strong>
+            Phases and gates
+          </RowLabel>
+          <RowLabel h={MILESTONE_ROW_H} strong>
+            Milestones
+          </RowLabel>
+          {model.bars.map((bar) => (
+            <RowLabel key={bar.id} h={ROW_H}>
+              {bar.kind === 'epic' ? `${bar.key} ${bar.label}` : bar.label}
+            </RowLabel>
           ))}
+        </Box>
 
-          {/* Axis */}
-          <g aria-hidden>
-            <line x1={0} x2={model.width} y1={AXIS_H} y2={AXIS_H} stroke={grid} />
-            {model.ticks.map((t) => (
-              <g key={t.date}>
-                <line x1={t.x} x2={t.x} y1={AXIS_H - 6} y2={AXIS_H} stroke={muted} />
-                <text x={t.x + 4} y={AXIS_H - 12} fontSize={11} fill={muted}>
-                  {t.label}
+        <Box ref={scroller} sx={{ overflowX: 'auto', flex: 1 }} data-testid="timeline-scroll">
+          <Box
+            component="svg"
+            width={model.width}
+            height={model.height}
+            role="group"
+            aria-label={`Timeline for ${data.project.name}, ${formatDate(model.start)} to ${formatDate(model.end)}`}
+            aria-describedby={editable ? 'timeline-help' : undefined}
+            sx={{
+              display: 'block',
+              fontFamily: theme.typography.fontFamily,
+              '& .tl-bar': { outline: 'none', cursor: editable ? 'grab' : 'default' },
+              '& .tl-bar:focus-visible .tl-bar-rect': {
+                stroke: theme.palette.secondary.main,
+                strokeWidth: 3,
+              },
+              '& .tl-bar:focus-visible .tl-bar-focus': { opacity: 1 },
+            }}
+          >
+            <defs>
+              <marker
+                id="tl-arrow"
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
+              >
+                <path d="M 0 0 L 10 5 L 0 10 z" fill={muted} />
+              </marker>
+              <marker
+                id="tl-arrow-critical"
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
+              >
+                <path d="M 0 0 L 10 5 L 0 10 z" fill={CRITICAL_COLOR} />
+              </marker>
+            </defs>
+
+            {/* Phase bands */}
+            {model.phases.map((p, i) => (
+              <g key={p.id} data-testid="phase-band" data-gate={p.gate}>
+                <title>
+                  {`Phase ${p.gate} ${p.name}: ${formatDate(p.start)} to ${formatDate(p.end)}${p.derived ? ' (estimated from project dates)' : ''}`}
+                </title>
+                <rect
+                  x={p.x}
+                  y={AXIS_H}
+                  width={p.w}
+                  height={model.height - AXIS_H}
+                  fill={i % 2 === 0 ? bandFill : 'transparent'}
+                />
+                <line x1={p.x} x2={p.x} y1={AXIS_H} y2={model.height} stroke={grid} />
+                <text
+                  x={p.x + 8}
+                  y={AXIS_H + 18}
+                  fontSize={12}
+                  fontWeight={600}
+                  fill={theme.palette.text.primary}
+                >
+                  {p.w > 70 ? `${p.gate}. ${p.name}` : p.gate}
                 </text>
               </g>
             ))}
-            <line x1={0} x2={model.width} y1={HEADER_H} y2={HEADER_H} stroke={grid} />
-          </g>
 
-          {/* Gates */}
-          {model.gates.map((g) => (
-            <g key={g.phaseId} data-testid="gate-diamond" data-passed={g.passed}>
-              <title>{`Gate ${g.gate} (${g.name}): ${g.passed ? 'passed' : 'upcoming'}, ${formatDate(g.date)}`}</title>
-              <GateGlyph x={Math.min(g.x, model.width - 10)} y={AXIS_H + 32} passed={g.passed} />
+            {/* Axis */}
+            <g aria-hidden>
+              <line x1={0} x2={model.width} y1={AXIS_H} y2={AXIS_H} stroke={grid} />
+              {model.ticks.map((t) => (
+                <g key={t.date}>
+                  <line x1={t.x} x2={t.x} y1={AXIS_H - 6} y2={AXIS_H} stroke={muted} />
+                  <text x={t.x + 4} y={AXIS_H - 12} fontSize={11} fill={muted}>
+                    {t.label}
+                  </text>
+                </g>
+              ))}
+              <line x1={0} x2={model.width} y1={HEADER_H} y2={HEADER_H} stroke={grid} />
             </g>
-          ))}
 
-          {/* Milestones */}
-          {model.milestones.map((m) => {
-            const y = AXIS_H + PHASE_ROW_H + MILESTONE_ROW_H / 2;
-            return (
-              <g key={m.id} data-testid={`milestone-${m.kind}`}>
-                <title>{`${m.label}: ${formatDate(m.date)}`}</title>
-                {m.kind === 'target' ? (
-                  <>
-                    <path
-                      d={`M ${m.x} ${y - 8} L ${m.x + 6} ${y} L ${m.x} ${y + 8} L ${m.x - 6} ${y} Z`}
-                      fill={RAG_COLORS.amber}
-                    />
-                    <text x={m.x + 9} y={y + 4} fontSize={11} fill={theme.palette.text.primary}>
-                      Target
-                    </text>
-                  </>
-                ) : (
-                  <path
-                    d={`M ${m.x} ${y + 7} V ${y - 7} l 8 3.5 l -8 3.5`}
-                    fill={SPRINT_COLOR}
-                    stroke={SPRINT_COLOR}
-                  />
-                )}
+            {/* Gates */}
+            {model.gates.map((g) => (
+              <g key={g.phaseId} data-testid="gate-diamond" data-passed={g.passed}>
+                <title>{`Gate ${g.gate} (${g.name}): ${g.passed ? 'passed' : 'upcoming'}, ${formatDate(g.date)}`}</title>
+                <GateGlyph x={Math.min(g.x, model.width - 10)} y={AXIS_H + 32} passed={g.passed} />
               </g>
-            );
-          })}
+            ))}
 
-          {/* Row stripes */}
-          {model.bars.map((bar) => (
-            <line
-              key={`grid-${bar.id}`}
-              x1={0}
-              x2={model.width}
-              y1={HEADER_H + (bar.row + 1) * ROW_H}
-              y2={HEADER_H + (bar.row + 1) * ROW_H}
-              stroke={grid}
-              strokeOpacity={0.5}
-            />
-          ))}
+            {/* Milestones */}
+            {model.milestones.map((m) => {
+              const y = AXIS_H + PHASE_ROW_H + MILESTONE_ROW_H / 2;
+              return (
+                <g key={m.id} data-testid={`milestone-${m.kind}`}>
+                  <title>{`${m.label}: ${formatDate(m.date)}`}</title>
+                  {m.kind === 'target' ? (
+                    <>
+                      <path
+                        d={`M ${m.x} ${y - 8} L ${m.x + 6} ${y} L ${m.x} ${y + 8} L ${m.x - 6} ${y} Z`}
+                        fill={RAG_COLORS.amber}
+                      />
+                      <text x={m.x + 9} y={y + 4} fontSize={11} fill={theme.palette.text.primary}>
+                        Target
+                      </text>
+                    </>
+                  ) : (
+                    <path
+                      d={`M ${m.x} ${y + 7} V ${y - 7} l 8 3.5 l -8 3.5`}
+                      fill={SPRINT_COLOR}
+                      stroke={SPRINT_COLOR}
+                    />
+                  )}
+                </g>
+              );
+            })}
 
-          {/* Dependencies */}
-          <g aria-hidden>
-            {model.arrows.map((a) => (
-              <path
-                key={a.id}
-                d={a.path}
-                fill="none"
-                stroke={muted}
-                strokeWidth={1.5}
-                markerEnd="url(#tl-arrow)"
-                data-testid="dependency-arrow"
+            {/* Row stripes */}
+            {model.bars.map((bar) => (
+              <line
+                key={`grid-${bar.id}`}
+                x1={0}
+                x2={model.width}
+                y1={HEADER_H + (bar.row + 1) * ROW_H}
+                y2={HEADER_H + (bar.row + 1) * ROW_H}
+                stroke={grid}
+                strokeOpacity={0.5}
               />
             ))}
-          </g>
 
-          {/* Bars */}
-          {model.bars.map((bar) => {
-            const color = bar.kind === 'sprint' ? SPRINT_COLOR : EPIC_COLOR;
-            const isCritical = critical.has(bar.id);
-            const offset = drag?.id === bar.id ? dragDays(drag.dx, zoom) * model.pxPerDay : 0;
-            const label = bar.kind === 'epic' ? `${bar.key} ${bar.label}` : bar.label;
-            const fits = bar.w > label.length * 6.5 + 16;
-            return (
-              <g
-                key={bar.id}
-                className="tl-bar"
-                tabIndex={0}
-                role={editable ? 'button' : 'img'}
-                aria-roledescription={editable ? 'movable timeline bar' : undefined}
-                aria-label={barAriaLabel(bar, { editable, critical: isCritical })}
-                data-testid={`bar-${bar.kind}-${bar.id}`}
-                data-start={bar.start}
-                data-end={bar.end}
-                transform={`translate(${offset} 0)`}
-                style={{
-                  transition: drag || reduceMotion ? 'none' : 'transform 150ms ease-out',
-                  touchAction: 'none',
-                }}
-                onKeyDown={(e) => {
-                  if (!editable) return;
-                  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-                    e.preventDefault();
-                    onReschedule(bar, e.key === 'ArrowRight' ? 1 : -1);
-                  }
-                }}
-                onPointerDown={(e) => {
-                  if (!editable || e.button !== 0) return;
-                  (e.currentTarget as Element).setPointerCapture(e.pointerId);
-                  setDrag({ id: bar.id, startX: e.clientX, dx: 0 });
-                }}
-                onPointerMove={(e) => {
-                  if (drag?.id !== bar.id) return;
-                  setDrag({ ...drag, dx: e.clientX - drag.startX });
-                }}
-                onPointerUp={() => endDrag(bar)}
-                onPointerCancel={() => setDrag(null)}
-              >
-                <title>{`${label}: ${formatDate(bar.start)} to ${formatDate(bar.end)}`}</title>
-                <rect
-                  className="tl-bar-focus"
-                  x={bar.x - 3}
-                  y={bar.y - 3}
-                  width={bar.w + 6}
-                  height={BAR_H + 6}
-                  rx={8}
-                  fill="none"
-                  stroke={theme.palette.secondary.main}
+            {/* Dependencies */}
+            <g aria-hidden>
+              {model.arrows.map((a) => {
+                const crit = critical.arrows.has(a.id);
+                return (
+                  <path
+                    key={a.id}
+                    d={a.path}
+                    fill="none"
+                    stroke={crit ? CRITICAL_COLOR : muted}
+                    strokeWidth={crit ? 2.5 : 1.5}
+                    strokeDasharray={crit ? CRITICAL_DASH : undefined}
+                    markerEnd={crit ? 'url(#tl-arrow-critical)' : 'url(#tl-arrow)'}
+                    data-testid="dependency-arrow"
+                    data-critical={crit || undefined}
+                  />
+                );
+              })}
+            </g>
+
+            {/* Bars */}
+            {model.bars.map((bar) => {
+              const color = bar.kind === 'sprint' ? SPRINT_COLOR : EPIC_COLOR;
+              const isCritical = critical.bars.has(bar.id);
+              const float = cpOn ? critical.float.get(bar.id) : undefined;
+              const offset = drag?.id === bar.id ? dragDays(drag.dx, zoom) * model.pxPerDay : 0;
+              const label = bar.kind === 'epic' ? `${bar.key} ${bar.label}` : bar.label;
+              const fits = bar.w > label.length * 6.5 + 16;
+              return (
+                <g
+                  key={bar.id}
+                  className="tl-bar"
+                  tabIndex={0}
+                  role={editable ? 'button' : 'img'}
+                  aria-roledescription={editable ? 'movable timeline bar' : undefined}
+                  aria-label={barAriaLabel(bar, { editable, critical: isCritical, float })}
+                  data-testid={`bar-${bar.kind}-${bar.id}`}
+                  data-critical={isCritical || undefined}
+                  data-start={bar.start}
+                  data-end={bar.end}
+                  transform={`translate(${offset} 0)`}
+                  style={{
+                    transition: drag || reduceMotion ? 'none' : 'transform 150ms ease-out',
+                    touchAction: 'none',
+                  }}
+                  onKeyDown={(e) => {
+                    if (!editable) return;
+                    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                      e.preventDefault();
+                      onReschedule(bar, e.key === 'ArrowRight' ? 1 : -1);
+                    }
+                  }}
+                  onPointerDown={(e) => {
+                    if (!editable || e.button !== 0) return;
+                    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+                    setDrag({ id: bar.id, startX: e.clientX, dx: 0 });
+                  }}
+                  onPointerMove={(e) => {
+                    if (drag?.id !== bar.id) return;
+                    setDrag({ ...drag, dx: e.clientX - drag.startX });
+                  }}
+                  onPointerUp={() => endDrag(bar)}
+                  onPointerCancel={() => setDrag(null)}
+                >
+                  <title>
+                    {`${label}: ${formatDate(bar.start)} to ${formatDate(bar.end)}${float === undefined ? '' : `, ${floatLabel(float)}`}${isCritical ? ' (critical path)' : ''}`}
+                  </title>
+                  {isCritical && (
+                    <rect
+                      className="tl-bar-critical"
+                      x={bar.x - 2}
+                      y={bar.y - 2}
+                      width={Math.max(bar.w, 4) + 4}
+                      height={BAR_H + 4}
+                      rx={7}
+                      fill="none"
+                      stroke={CRITICAL_COLOR}
+                      strokeWidth={2.5}
+                      strokeDasharray={CRITICAL_DASH}
+                    />
+                  )}
+                  <rect
+                    className="tl-bar-focus"
+                    x={bar.x - 3}
+                    y={bar.y - 3}
+                    width={bar.w + 6}
+                    height={BAR_H + 6}
+                    rx={8}
+                    fill="none"
+                    stroke={theme.palette.secondary.main}
+                    strokeWidth={2}
+                    opacity={0}
+                  />
+                  <rect
+                    className="tl-bar-rect"
+                    x={bar.x}
+                    y={bar.y}
+                    width={Math.max(bar.w, 4)}
+                    height={BAR_H}
+                    rx={6}
+                    fill={color}
+                    fillOpacity={bar.status === 'completed' || bar.status === 'accepted' ? 0.45 : 0.9}
+                    stroke="none"
+                    strokeDasharray={
+                      bar.kind === 'epic' && bar.source !== 'children' && bar.source !== 'schedule'
+                        ? '4 3'
+                        : undefined
+                    }
+                  />
+                  <text
+                    x={fits ? bar.x + 8 : bar.x + bar.w + 6}
+                    y={bar.y + BAR_H / 2 + 4}
+                    fontSize={11}
+                    fontWeight={600}
+                    fill={fits ? '#FFFFFF' : theme.palette.text.primary}
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    {label}
+                    {isCritical ? ' (critical)' : ''}
+                  </text>
+                </g>
+              );
+            })}
+
+            {/* Today */}
+            {model.today && (
+              <g data-testid="today-line">
+                <title>{`Today, ${formatDate(model.today.date)}`}</title>
+                <line
+                  x1={model.today.x}
+                  x2={model.today.x}
+                  y1={AXIS_H}
+                  y2={model.height}
+                  stroke={RAG_COLORS.red}
                   strokeWidth={2}
-                  opacity={0}
                 />
                 <rect
-                  className="tl-bar-rect"
-                  x={bar.x}
-                  y={bar.y}
-                  width={Math.max(bar.w, 4)}
-                  height={BAR_H}
-                  rx={6}
-                  fill={color}
-                  fillOpacity={bar.status === 'completed' || bar.status === 'accepted' ? 0.45 : 0.9}
-                  stroke={isCritical ? RAG_COLORS.red : 'none'}
-                  strokeWidth={isCritical ? 2.5 : 0}
-                  strokeDasharray={
-                    bar.kind === 'epic' && bar.source !== 'children' && bar.source !== 'schedule'
-                      ? '4 3'
-                      : undefined
-                  }
+                  x={model.today.x - 20}
+                  y={AXIS_H + PHASE_ROW_H + 2}
+                  width={40}
+                  height={16}
+                  rx={4}
+                  fill={RAG_COLORS.red}
                 />
                 <text
-                  x={fits ? bar.x + 8 : bar.x + bar.w + 6}
-                  y={bar.y + BAR_H / 2 + 4}
-                  fontSize={11}
-                  fontWeight={600}
-                  fill={fits ? '#FFFFFF' : theme.palette.text.primary}
-                  style={{ pointerEvents: 'none' }}
+                  x={model.today.x}
+                  y={AXIS_H + PHASE_ROW_H + 14}
+                  fontSize={10}
+                  fontWeight={700}
+                  textAnchor="middle"
+                  fill="#FFFFFF"
                 >
-                  {label}
-                  {isCritical ? ' (critical)' : ''}
+                  Today
                 </text>
               </g>
-            );
-          })}
+            )}
+          </Box>
+        </Box>
 
-          {/* Today */}
-          {model.today && (
-            <g data-testid="today-line">
-              <title>{`Today, ${formatDate(model.today.date)}`}</title>
-              <line
-                x1={model.today.x}
-                x2={model.today.x}
-                y1={AXIS_H}
-                y2={model.height}
-                stroke={RAG_COLORS.red}
-                strokeWidth={2}
-              />
-              <rect
-                x={model.today.x - 20}
-                y={AXIS_H + PHASE_ROW_H + 2}
-                width={40}
-                height={16}
-                rx={4}
-                fill={RAG_COLORS.red}
-              />
-              <text
-                x={model.today.x}
-                y={AXIS_H + PHASE_ROW_H + 14}
-                fontSize={10}
-                fontWeight={700}
-                textAnchor="middle"
-                fill="#FFFFFF"
-              >
-                Today
-              </text>
-            </g>
-          )}
+        {/* Text alternative for the phase and gate band */}
+        <Box component="ul" sx={srOnly} aria-label="Phases and gates">
+          {model.phases.map((p) => (
+            <li key={p.id}>
+              {`Phase ${p.gate} ${p.name}, ${formatDate(p.start)} to ${formatDate(p.end)}. Gate ${p.passed ? 'passed' : 'upcoming'}.`}
+            </li>
+          ))}
+          {model.today && <li>{`Today is ${formatDate(model.today.date)}.`}</li>}
         </Box>
       </Box>
+    </>
+  );
+}
 
-      {/* Text alternative for the phase and gate band */}
-      <Box component="ul" sx={srOnly} aria-label="Phases and gates">
-        {model.phases.map((p) => (
-          <li key={p.id}>
-            {`Phase ${p.gate} ${p.name}, ${formatDate(p.start)} to ${formatDate(p.end)}. Gate ${p.passed ? 'passed' : 'upcoming'}.`}
-          </li>
-        ))}
-        {model.today && <li>{`Today is ${formatDate(model.today.date)}.`}</li>}
-      </Box>
-    </Box>
+/** The model with one bar moved `days` days (analysed live while that bar is being dragged). */
+function shiftedModel(model: TimelineModel, id: string | undefined, days: number): TimelineModel {
+  if (!id || !days) return model;
+  return { ...model, bars: model.bars.map((b) => (b.id === id ? { ...b, ...shiftSpan(b, days) } : b)) };
+}
+
+function CriticalSummary({ result, scope }: { result: CriticalPathResult; scope: CriticalScope }) {
+  const where = scope === 'execute' ? 'Execute phase' : 'all phases';
+  return (
+    <Stack spacing={1} sx={{ mb: 1.5 }}>
+      <Typography variant="body2" role="status" data-testid="critical-summary">
+        {result.chain.length
+          ? `Critical path (${where}): ${result.chain.join(' → ')}${result.finish ? `, finishing ${formatDate(result.finish)}` : ''}. Critical bars have a red dash-dot outline; hover or focus a bar to see its float.`
+          : `No critical epics in the ${where}.`}
+      </Typography>
+      {result.cycles.length > 0 && (
+        <Alert severity="warning" data-testid="critical-cycles">
+          {`Dependency ${result.cycles.length === 1 ? 'cycle' : 'cycles'} found and ignored: ${result.cycles
+            .map((c) => [...c, c[0]].join(' → '))
+            .join('; ')}. Remove one of the blocking links to fix it.`}
+        </Alert>
+      )}
+    </Stack>
   );
 }
 
