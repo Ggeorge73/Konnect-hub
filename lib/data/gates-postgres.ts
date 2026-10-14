@@ -30,6 +30,7 @@ import {
   type Sql,
   type Tx,
 } from './postgres';
+import { pgOnGateDecided, pgOnGateRequested } from './notify-postgres';
 
 /**
  * Gates on Postgres + RLS (0005_gates_deliverables). Reviews are requested through
@@ -258,6 +259,7 @@ export function createPostgresGateStore(sql: Sql): GateStore {
         const [row] = await tx`
           select id from public.request_gate_review(${phase.id}::uuid, ${input.overrideNote ?? null}::text,
             ${summary}::text, ${Boolean(input.shareBudget)}::boolean)`;
+        await pgOnGateRequested(tx, s, project, { id: row.id, gate: phase.gate, summary }, phase.name);
         return (await loadReviews(tx, s, project.id, row.id))[0];
       });
     },
@@ -301,6 +303,22 @@ export function createPostgresGateStore(sql: Sql): GateStore {
             select 1 from public.decide_gate(${r.id}::uuid, ${v.value.decision}::public.gate_decision,
               ${v.value.conditions ? textArray(v.value.conditions) : null}::text[],
               ${v.value.reason ?? null}::text, ${safeIp(ctx.ip)}::inet)`;
+          const [d] = await tx`
+            select ph.gate, ph.name as phase_name, g.decision, g.reason, g.conditions, g.requested_by
+            from public.gate_reviews g join public.phases ph on ph.id = g.phase_id where g.id = ${r.id}`;
+          await pgOnGateDecided(
+            tx,
+            s,
+            project,
+            {
+              gate: d.gate,
+              decision: d.decision,
+              reason: d.reason,
+              conditions: d.conditions ? String(d.conditions).split('\n') : null,
+              requestedBy: d.requested_by,
+            },
+            d.phase_name,
+          );
           return (await loadReviews(tx, s, project.id, r.id))[0];
         },
         reauthOptions(s, ctx),

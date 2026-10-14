@@ -8,6 +8,10 @@ import { memorySprintStore } from './sprints';
 import { memoryGateStore } from './gates';
 import { memoryDeliverableStore } from './deliverables';
 import { memoryAcceptanceRecordStore } from './acceptance-record';
+import { memoryInsightStore } from './insight';
+import { memoryMetricsStore } from './metrics';
+import { memoryReportStore } from './reports';
+import { memorySignalStore } from './notify';
 
 const as = (id: string) => sessionFor(id);
 
@@ -22,6 +26,10 @@ runDomainContracts(
     gates: memoryGateStore,
     deliverables: memoryDeliverableStore,
     acceptance: memoryAcceptanceRecordStore,
+    insight: memoryInsightStore,
+    metrics: memoryMetricsStore,
+    reports: memoryReportStore,
+    signal: memorySignalStore,
   }),
   sessionFor,
   resetDb,

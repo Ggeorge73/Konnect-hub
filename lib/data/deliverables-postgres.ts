@@ -26,6 +26,7 @@ import {
   type Sql,
   type Tx,
 } from './postgres';
+import { pgOnDeliverableSubmitted } from './notify-postgres';
 
 /**
  * Deliverables on Postgres + RLS (deliverables, deliverable_items, deliverable_criteria).
@@ -261,6 +262,7 @@ export function createPostgresDeliverableStore(sql: Sql): DeliverableStore {
           'shared',
         );
         await audit(tx, s, d.projectId, 'deliverable.submit', 'deliverable', d.id, d.status, 'submitted');
+        await pgOnDeliverableSubmitted(tx, s, await findProject(tx, d.projectId), d);
         return view(tx, s, d.id);
       });
     },

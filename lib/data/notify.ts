@@ -22,6 +22,8 @@ import { publish } from '../realtime/bus';
 import { db } from './memory';
 import { newId } from './ids';
 import { ValidationError } from './errors';
+import { isPostgresEnabled } from './index';
+import { postgresSignalStore } from './notify-postgres';
 
 /**
  * Central notification dispatcher (NTF-01).
@@ -33,9 +35,11 @@ import { ValidationError } from './errors';
  *  3. applies the recipient's channel for the kind (in-app / email / daily digest / off);
  *  4. writes the in-app notification and, for `email`, sends the email (Resend or dev outbox).
  *
- * It works on the demo store. In Postgres mode the same rule set maps onto `public.notifications`
- * (0008 adds a `visibility` column with a trigger that refuses internal notifications to clients)
- * and `public.notification_channel_prefs`.
+ * This is the demo-store sink. In Postgres mode the same rule (`deliveryChannel`) runs in
+ * `pgNotify` (notify-postgres.ts), which writes `public.notifications` with the content's
+ * `visibility`; the 0008 trigger refuses internal notifications to clients as a backstop. The
+ * notification center below (`SignalStore`) has a demo and a Postgres implementation, picked
+ * like getRepo().
  */
 export type { NotificationKind } from '../domain/notifications';
 export { NOTIFICATION_KINDS } from '../domain/notifications';
@@ -56,6 +60,22 @@ export interface NotifyEvent {
   now?: Date;
 }
 
+/**
+ * The dispatch rule shared by the demo store (`notify`) and the Postgres sink
+ * (notify-postgres.ts): the actor, people who cannot see the project, the client-safety rule
+ * (`mayNotify`) and an `off` channel drop the recipient (null); otherwise the channel to use.
+ */
+export function deliveryChannel(
+  e: Pick<NotifyEvent, 'kind' | 'visibility' | 'actorId'>,
+  user: Pick<Profile, 'id' | 'role'>,
+  canSee: boolean,
+  channel: Channel,
+): Channel | null {
+  if (user.id === e.actorId || !canSee || !mayNotify(user, e.kind, e.visibility)) return null;
+  return channel === 'off' ? null : channel;
+}
+
+/** Demo-store sink: writes to `db().notifications` (Postgres: `pgNotify` in notify-postgres.ts). */
 export function notify(e: NotifyEvent): Notification[] {
   const d = db();
   const project = d.projects.find((p) => p.id === e.projectId);
@@ -64,10 +84,14 @@ export function notify(e: NotifyEvent): Notification[] {
   const out: Notification[] = [];
   for (const id of new Set(e.recipients)) {
     const user = d.profiles.find((p) => p.id === id);
-    if (!user || id === e.actorId) continue;
-    if (!canSeeProject(user, project, d.members) || !mayNotify(user, e.kind, e.visibility)) continue;
-    const channel = channelFor(d.signal.notificationPrefs, id, e.kind);
-    if (channel === 'off') continue;
+    if (!user) continue;
+    const channel = deliveryChannel(
+      e,
+      user,
+      canSeeProject(user, project, d.members),
+      channelFor(d.signal.notificationPrefs, id, e.kind),
+    );
+    if (!channel) continue;
     const n: Notification = {
       id: newId('nt'),
       userId: id,
@@ -252,7 +276,7 @@ export function onDeliverableSubmitted(s: Session, project: Project, dl: Deliver
 // Notification center, preferences, watchers and digests.
 // ---------------------------------------------------------------------------
 
-export async function listNotifications(s: Session, limit = 50): Promise<Notification[]> {
+async function memListNotifications(s: Session, limit = 50): Promise<Notification[]> {
   return db()
     .notifications.filter((n) => n.userId === s.user.id)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -260,17 +284,17 @@ export async function listNotifications(s: Session, limit = 50): Promise<Notific
 }
 
 /** Marks the given notifications (or all of them) read for the current user only. */
-export async function markNotificationsRead(s: Session, ids?: string[], now: Date = new Date()) {
+async function memMarkNotificationsRead(s: Session, ids?: string[], now: Date = new Date()) {
   for (const n of db().notifications)
     if (n.userId === s.user.id && !n.readAt && (!ids || ids.includes(n.id))) n.readAt = now.toISOString();
-  return listNotifications(s);
+  return memListNotifications(s);
 }
 
-export async function getPreferences(s: Session) {
+async function memGetPreferences(s: Session) {
   return prefsFor(db().signal.notificationPrefs, s.user);
 }
 
-export async function setPreferences(s: Session, patch: Partial<Record<NotificationKind, Channel>>) {
+async function memSetPreferences(s: Session, patch: Partial<Record<NotificationKind, Channel>>) {
   const allowed = kindsFor(s.user);
   const prefs = db().signal.notificationPrefs;
   for (const [kind, channel] of Object.entries(patch) as [NotificationKind, Channel][]) {
@@ -280,25 +304,25 @@ export async function setPreferences(s: Session, patch: Partial<Record<Notificat
     if (row) row.channel = channel;
     else prefs.push({ userId: s.user.id, kind, channel });
   }
-  return getPreferences(s);
+  return memGetPreferences(s);
 }
 
 /** Watch state for an item the caller can already see (the route checks visibility first). */
-export async function getWatch(s: Session, itemId: string) {
+async function memGetWatch(s: Session, itemId: string) {
   const ids = watcherIds(db().signal.watchers, itemId);
   return { watching: ids.includes(s.user.id), count: ids.length };
 }
 
-export async function setWatch(s: Session, itemId: string, watching: boolean) {
+async function memSetWatch(s: Session, itemId: string, watching: boolean) {
   setWatching(db().signal.watchers, itemId, s.user.id, watching, new Date().toISOString());
-  return getWatch(s, itemId);
+  return memGetWatch(s, itemId);
 }
 
 /**
  * Daily digest run (cron). For every user, the notifications set to `digest` from the last
  * 24 hours that have not been digested yet go out in one email; they are then stamped.
  */
-export async function sendDigests(now: Date = new Date()) {
+async function memSendDigests(now: Date = new Date()) {
   const d = db();
   let sent = 0;
   let notifications = 0;
@@ -312,3 +336,55 @@ export async function sendDigests(now: Date = new Date()) {
   }
   return { sent, notifications };
 }
+
+// ---------------------------------------------------------------------------
+// Store selection (KH-51): demo store above, Postgres + RLS in notify-postgres.ts.
+// ---------------------------------------------------------------------------
+
+export interface WatchState {
+  watching: boolean;
+  count: number;
+}
+
+/** Notification center, preferences, watchers and digests. Shared behaviour: contract-signal.ts. */
+export interface SignalStore {
+  listNotifications(s: Session, limit?: number): Promise<Notification[]>;
+  markNotificationsRead(s: Session, ids?: string[], now?: Date): Promise<Notification[]>;
+  getPreferences(s: Session): Promise<Record<NotificationKind, Channel>>;
+  setPreferences(
+    s: Session,
+    patch: Partial<Record<NotificationKind, Channel>>,
+  ): Promise<Record<NotificationKind, Channel>>;
+  /** Watch state for an item the caller can already see (the route checks visibility first). */
+  getWatch(s: Session, itemId: string): Promise<WatchState>;
+  setWatch(s: Session, itemId: string, watching: boolean): Promise<WatchState>;
+  /**
+   * Daily digest run (cron). For every user, the notifications set to `digest` from the last
+   * 24 hours that have not been digested yet go out in one email; they are then stamped.
+   */
+  sendDigests(now?: Date): Promise<{ sent: number; notifications: number }>;
+}
+
+export const memorySignalStore: SignalStore = {
+  listNotifications: memListNotifications,
+  markNotificationsRead: memMarkNotificationsRead,
+  getPreferences: memGetPreferences,
+  setPreferences: memSetPreferences,
+  getWatch: memGetWatch,
+  setWatch: memSetWatch,
+  sendDigests: memSendDigests,
+};
+
+/** The active Signal store: Postgres + RLS when getRepo() would pick Postgres, else the demo store. */
+export const signalStore = (): SignalStore =>
+  isPostgresEnabled() ? postgresSignalStore() : memorySignalStore;
+
+export const listNotifications: SignalStore['listNotifications'] = (...a) =>
+  signalStore().listNotifications(...a);
+export const markNotificationsRead: SignalStore['markNotificationsRead'] = (...a) =>
+  signalStore().markNotificationsRead(...a);
+export const getPreferences: SignalStore['getPreferences'] = (...a) => signalStore().getPreferences(...a);
+export const setPreferences: SignalStore['setPreferences'] = (...a) => signalStore().setPreferences(...a);
+export const getWatch: SignalStore['getWatch'] = (...a) => signalStore().getWatch(...a);
+export const setWatch: SignalStore['setWatch'] = (...a) => signalStore().setWatch(...a);
+export const sendDigests: SignalStore['sendDigests'] = (...a) => signalStore().sendDigests(...a);

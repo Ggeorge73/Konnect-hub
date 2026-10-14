@@ -7,6 +7,10 @@ import type { SprintStore } from './sprints';
 import type { GateStore } from './gates';
 import type { DeliverableStore } from './deliverables';
 import type { AcceptanceRecordStore } from './acceptance-record';
+import type { InsightStore } from './insight';
+import type { MetricsStore } from './metrics';
+import type { ReportStore } from './reports';
+import type { SignalStore } from './notify';
 
 /** Every domain store of one backend, plus the core Repo (for fixtures such as items). */
 export interface DomainStores {
@@ -16,6 +20,10 @@ export interface DomainStores {
   gates: GateStore;
   deliverables: DeliverableStore;
   acceptance: AcceptanceRecordStore;
+  insight: InsightStore;
+  metrics: MetricsStore;
+  reports: ReportStore;
+  signal: SignalStore;
 }
 
 export type MakeStores = () => DomainStores;

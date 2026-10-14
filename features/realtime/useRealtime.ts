@@ -10,8 +10,11 @@ import type { RealtimeEvent } from '@/lib/realtime/bus';
  * components use the hook; each event invalidates the TanStack Query keys it affects, so the
  * board, list and open item panel refetch through the normal permission-checked API.
  *
- * Supabase mode swaps the EventSource for a Supabase Realtime channel behind this same hook
- * (see lib/realtime/bus.ts for the channel layout); callers do not change.
+ * Transport: demo mode (and a single local server process) uses the in-process bus over SSE
+ * (/api/realtime). In production Supabase Realtime replaces that bus: this hook swaps the
+ * EventSource for a `postgres_changes` channel per project, delivered through RLS (see
+ * lib/realtime/bus.ts for the channel layout); callers do not change. The SSE path stays the
+ * demo-mode default and must keep working.
  */
 type Conn = { es: EventSource; refs: number; clients: Set<QueryClient> };
 const conns = new Map<string, Conn>();

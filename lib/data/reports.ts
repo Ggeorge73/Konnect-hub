@@ -17,11 +17,17 @@ import type { Notification } from '../domain/notifications';
 import { db } from './memory';
 import { newId } from './ids';
 import { ForbiddenError, NotFoundError, ValidationError } from './errors';
+import { isPostgresEnabled } from './index';
+import { postgresReportStore } from './reports-postgres';
 
 /**
- * Weekly status reports (RPT-01), demo store. Mirrors supabase/migrations/0007_pulse.sql:
- * internal users on the project draft; only the project Lead or an Admin publishes; client users
- * read published reports of their own org, and only the client copy frozen at publish.
+ * Weekly status reports (RPT-01). Mirrors supabase/migrations/0007_pulse.sql: internal users on
+ * the project draft; only the project Lead or an Admin publishes; client users read published
+ * reports of their own org, and only the client copy frozen at publish.
+ *
+ * `ReportStore` has two implementations, picked like getRepo(): the demo store below and the
+ * Postgres + RLS store in reports-postgres.ts. Both build views with `reportView` /
+ * `reportSummary`. Shared behaviour: lib/data/contract-pulse.ts.
  */
 
 const iso = (d: Date) => d.toISOString();
@@ -33,7 +39,9 @@ function visibleProject(s: Session, keyOrId: string): Project {
   return p;
 }
 
-const nameOf = (id?: string | null) => db().profiles.find((p) => p.id === id)?.name ?? '—';
+const memNameOf = (id?: string | null) => db().profiles.find((p) => p.id === id)?.name ?? '—';
+
+export type NameOf = (id?: string | null) => string;
 
 export interface ReportSummary {
   id: string;
@@ -73,7 +81,7 @@ export interface ReportView {
   budgetHidden: boolean;
 }
 
-function summary(r: StatusReport, p: Project): ReportSummary {
+export function reportSummary(r: StatusReport, p: Project, nameOf: NameOf): ReportSummary {
   return {
     id: r.id,
     projectId: p.id,
@@ -88,7 +96,8 @@ function summary(r: StatusReport, p: Project): ReportSummary {
   };
 }
 
-function view(s: Session, r: StatusReport, p: Project): ReportView {
+/** What `s` may receive of a report: client users get the client copy only. */
+export function reportView(s: Session, r: StatusReport, p: Project, nameOf: NameOf): ReportView {
   const client = isClientRole(s.user.role);
   const budgetHidden = !client && !canSeeFinancials(s.user);
   let sections: Partial<ReportSections>;
@@ -128,7 +137,7 @@ function findVisible(s: Session, id: string): { report: StatusReport; project: P
   return { report: r, project: visibleProject(s, r.projectId) };
 }
 
-export async function listReports(s: Session, f: { project?: string } = {}): Promise<ReportSummary[]> {
+async function memListReports(s: Session, f: { project?: string } = {}): Promise<ReportSummary[]> {
   const d = db();
   const projects = f.project
     ? [visibleProject(s, f.project)]
@@ -137,7 +146,7 @@ export async function listReports(s: Session, f: { project?: string } = {}): Pro
   return d.statusReports
     .filter((r) => byId.has(r.projectId) && (!isClientRole(s.user.role) || r.status === 'published'))
     .sort((a, b) => b.weekStart.localeCompare(a.weekStart) || a.projectId.localeCompare(b.projectId))
-    .map((r) => summary(r, byId.get(r.projectId)!));
+    .map((r) => reportSummary(r, byId.get(r.projectId)!, memNameOf));
 }
 
 export interface ReportGrid {
@@ -147,7 +156,7 @@ export interface ReportGrid {
 }
 
 /** Projects × the last `weeks` reporting weeks (newest first), for the internal Reports page. */
-export async function reportGrid(s: Session, weeks = 4, now: Date = new Date()): Promise<ReportGrid> {
+async function memReportGrid(s: Session, weeks = 4, now: Date = new Date()): Promise<ReportGrid> {
   if (isClientRole(s.user.role)) throw new ForbiddenError('Client users read reports in the portal.');
   const d = db();
   const current = mondayOf(isoDay(now));
@@ -161,20 +170,20 @@ export async function reportGrid(s: Session, weeks = 4, now: Date = new Date()):
       canDraft: canDraftReports(s.user),
       canPublish: canPublishReport(s.user, p),
     })),
-    reports: await listReports(s),
+    reports: await memListReports(s),
   };
 }
 
-export async function getReport(s: Session, id: string): Promise<ReportView> {
+async function memGetReport(s: Session, id: string): Promise<ReportView> {
   const { report, project } = findVisible(s, id);
-  return view(s, report, project);
+  return reportView(s, report, project, memNameOf);
 }
 
 /**
  * "Generate draft": builds the report for the project's week (default: this week) from that week's
  * activity. Returns the existing draft if there is one; a published week cannot be regenerated.
  */
-export async function generateDraft(
+async function memGenerateDraft(
   s: Session,
   projectKey: string,
   week?: string,
@@ -187,7 +196,7 @@ export async function generateDraft(
   const existing = d.statusReports.find((r) => r.projectId === p.id && r.weekStart === weekStart);
   if (existing?.status === 'published')
     throw new ValidationError('The report for this week is already published.');
-  if (existing) return view(s, existing, p);
+  if (existing) return reportView(s, existing, p, memNameOf);
   const draft = buildStatusDraft({
     project: p,
     weekStart,
@@ -229,7 +238,7 @@ export async function generateDraft(
     detail: `Status report drafted for the week of ${weekStart}`,
     at: t,
   });
-  return view(s, report, p);
+  return reportView(s, report, p, memNameOf);
 }
 
 export interface ReportPatch {
@@ -238,7 +247,7 @@ export interface ReportPatch {
   ragReason?: string;
 }
 
-export async function updateReport(
+async function memUpdateReport(
   s: Session,
   id: string,
   patch: ReportPatch,
@@ -253,7 +262,7 @@ export async function updateReport(
   if (patch.rag) report.rag = patch.rag;
   if (patch.ragReason !== undefined) report.ragReason = patch.ragReason.trim();
   report.updatedAt = iso(now);
-  return view(s, report, project);
+  return reportView(s, report, project, memNameOf);
 }
 
 function clientCopy(report: StatusReport, project: Project, shareBudget: boolean) {
@@ -276,7 +285,7 @@ export interface PublishCheck {
 }
 
 /** The pre-publish checklist: what the client copy will leave out, and who will be notified. */
-export async function publishCheck(s: Session, id: string, shareBudget = false): Promise<PublishCheck> {
+async function memPublishCheck(s: Session, id: string, shareBudget = false): Promise<PublishCheck> {
   const { report, project } = findVisible(s, id);
   if (!canPublishReport(s.user, project))
     throw new ForbiddenError('Only the project Lead or an Admin can publish status reports.');
@@ -290,7 +299,7 @@ export async function publishCheck(s: Session, id: string, shareBudget = false):
  * Publishes to the client portal: freezes the client copy (internal content removed), records an
  * audit entry, and notifies every client user of the project's org (email is a later story).
  */
-export async function publishReport(
+async function memPublishReport(
   s: Session,
   id: string,
   opts: { shareBudget?: boolean } = {},
@@ -343,5 +352,52 @@ export async function publishReport(
     readAt: null,
   }));
   d.notifications.push(...notes);
-  return view(s, report, project);
+  return reportView(s, report, project, memNameOf);
 }
+
+// ---------------------------------------------------------------------------
+// Store selection (KH-51)
+// ---------------------------------------------------------------------------
+
+export interface ReportStore {
+  listReports(s: Session, f?: { project?: string }): Promise<ReportSummary[]>;
+  /** Projects x the last `weeks` reporting weeks (newest first), for the internal Reports page. */
+  reportGrid(s: Session, weeks?: number, now?: Date): Promise<ReportGrid>;
+  getReport(s: Session, id: string): Promise<ReportView>;
+  /**
+   * "Generate draft": builds the report for the project's week (default: this week) from that
+   * week's activity. Returns the existing draft if there is one; a published week cannot be
+   * regenerated.
+   */
+  generateDraft(s: Session, projectKey: string, week?: string, now?: Date): Promise<ReportView>;
+  updateReport(s: Session, id: string, patch: ReportPatch, now?: Date): Promise<ReportView>;
+  /** The pre-publish checklist: what the client copy will leave out, and who will be notified. */
+  publishCheck(s: Session, id: string, shareBudget?: boolean): Promise<PublishCheck>;
+  /**
+   * Publishes to the client portal: freezes the client copy (internal content removed), records an
+   * audit entry, and notifies every client user of the project's org.
+   */
+  publishReport(s: Session, id: string, opts?: { shareBudget?: boolean }, now?: Date): Promise<ReportView>;
+}
+
+export const memoryReportStore: ReportStore = {
+  listReports: memListReports,
+  reportGrid: memReportGrid,
+  getReport: memGetReport,
+  generateDraft: memGenerateDraft,
+  updateReport: memUpdateReport,
+  publishCheck: memPublishCheck,
+  publishReport: memPublishReport,
+};
+
+/** The active report store: Postgres + RLS when getRepo() would pick Postgres, else the demo store. */
+export const reportStore = (): ReportStore =>
+  isPostgresEnabled() ? postgresReportStore() : memoryReportStore;
+
+export const listReports: ReportStore['listReports'] = (...a) => reportStore().listReports(...a);
+export const reportGrid: ReportStore['reportGrid'] = (...a) => reportStore().reportGrid(...a);
+export const getReport: ReportStore['getReport'] = (...a) => reportStore().getReport(...a);
+export const generateDraft: ReportStore['generateDraft'] = (...a) => reportStore().generateDraft(...a);
+export const updateReport: ReportStore['updateReport'] = (...a) => reportStore().updateReport(...a);
+export const publishCheck: ReportStore['publishCheck'] = (...a) => reportStore().publishCheck(...a);
+export const publishReport: ReportStore['publishReport'] = (...a) => reportStore().publishReport(...a);
