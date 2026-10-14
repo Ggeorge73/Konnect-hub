@@ -40,6 +40,8 @@ export interface Profile {
   hoursPerWeek?: number;
   /** Admin-only column. Never serialize to non-admins. */
   costRate?: number;
+  /** ADM-01: set when an Admin deactivates the user (soft); they can no longer sign in. */
+  deactivatedAt?: string | null;
 }
 
 export interface Project {

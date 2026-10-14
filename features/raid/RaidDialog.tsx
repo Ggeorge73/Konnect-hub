@@ -18,6 +18,7 @@ import {
 } from '@mui/material';
 import LockOutlined from '@mui/icons-material/LockOutlined';
 import PublicOutlined from '@mui/icons-material/PublicOutlined';
+import { Attachments } from '@/features/files/Attachments';
 import {
   closureError,
   RAID_KINDS,
@@ -416,6 +417,7 @@ export function RaidDialog({
             </ToggleButtonGroup>
           </Stack>
         </Stack>
+        {entry && <Attachments type="raid" id={entry.id} />}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>

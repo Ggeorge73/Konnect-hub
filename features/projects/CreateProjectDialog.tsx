@@ -19,6 +19,7 @@ import Grid from '@mui/material/Grid2';
 import { createProjectSchema } from '@/lib/schemas';
 import { useCreateProject, useMe, useOrgs, usePeople } from '@/lib/client/api';
 import { TEMPLATES } from '@/lib/domain/templates';
+import { useTemplates } from '@/features/admin/api';
 
 type Form = z.input<typeof createProjectSchema>;
 const HEALTH = /clinic|health|hospital|medical|care/i;
@@ -28,6 +29,8 @@ export function CreateProjectDialog({ open, onClose }: { open: boolean; onClose:
   const { data: people = [] } = usePeople();
   const { data: me } = useMe();
   const create = useCreateProject();
+  // Built-in and Admin-made templates (ADM-01); the built-ins until the list loads.
+  const { data: templates = TEMPLATES } = useTemplates({ enabled: open });
   const router = useRouter();
   const today = new Date().toISOString().slice(0, 10);
   const {
@@ -139,7 +142,7 @@ export function CreateProjectDialog({ open, onClose }: { open: boolean; onClose:
                 'templateId',
                 'Template',
                 { select: true },
-                TEMPLATES.map((t) => (
+                templates.map((t) => (
                   <MenuItem key={t.id} value={t.id}>
                     {t.name}
                   </MenuItem>

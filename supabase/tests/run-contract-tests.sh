@@ -18,5 +18,6 @@ kh_db_create "kh_contract_$$"
 kh_db_load_all
 
 cd "$KH_SUPA_DIR/.."
-echo "-- running lib/data/postgres.test.ts lib/data/capacity-postgres.test.ts"
-TEST_DATABASE_URL="$TEST_URL" npx vitest run lib/data/postgres.test.ts lib/data/capacity-postgres.test.ts "$@"
+echo "-- running lib/data/postgres.test.ts lib/data/capacity-postgres.test.ts lib/data/admin-postgres.test.ts"
+TEST_DATABASE_URL="$TEST_URL" npx vitest run lib/data/postgres.test.ts lib/data/capacity-postgres.test.ts \
+  lib/data/admin-postgres.test.ts "$@"
