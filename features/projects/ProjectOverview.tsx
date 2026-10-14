@@ -1,4 +1,5 @@
 'use client';
+import Link from 'next/link';
 import { List, ListItem, ListItemText, Paper, Stack, Typography, Box, Chip } from '@mui/material';
 import Grid from '@mui/material/Grid2';
 import { useActivity, useItems, useMe } from '@/lib/client/api';
@@ -7,6 +8,7 @@ import { EmptyState, Mono } from '@/components/ui/bits';
 import { canSeeFinancials } from '@/lib/domain/permissions';
 import { STATUS_LABEL } from '@/lib/domain/workflow';
 import { CalendarSubscribeButton } from '@/features/notifications/CalendarSubscribeButton';
+import { LinkAction } from '@/components/ui/EmptyActions';
 
 const usd = (n: number) =>
   n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
@@ -58,6 +60,15 @@ export function ProjectOverview() {
           <Typography variant="h3" gutterBottom>
             Gate {current?.gate}: {current?.name} — exit criteria
           </Typography>
+          {crit.length === 0 && (
+            <Typography variant="body2" color="text.secondary">
+              No exit criteria yet. Add them on the{' '}
+              <Link href={`/projects/${b.project.key}/gates`} style={{ color: 'inherit' }}>
+                Gates tab
+              </Link>{' '}
+              so the gate review has a clear checklist.
+            </Typography>
+          )}
           <List dense>
             {crit.map((c) => (
               <ListItem key={c.id} disableGutters>
@@ -76,6 +87,15 @@ export function ProjectOverview() {
             Upcoming milestones
           </Typography>
           <CalendarSubscribeButton projectKey={b.project.key} />
+          {upcoming.length === 0 && (
+            <Typography variant="body2" color="text.secondary">
+              No upcoming dates. Plan a sprint on the{' '}
+              <Link href={`/projects/${b.project.key}/backlog`} style={{ color: 'inherit' }}>
+                Backlog
+              </Link>{' '}
+              to see its end date here.
+            </Typography>
+          )}
           <List dense>
             {upcoming.map((u) => (
               <ListItem key={u.name} disableGutters>
@@ -91,7 +111,11 @@ export function ProjectOverview() {
             Recent activity
           </Typography>
           {activity.length === 0 ? (
-            <EmptyState title="Quiet so far" body="Activity appears here as the team moves work." />
+            <EmptyState
+              title="Quiet so far"
+              body="Activity appears here as the team moves work."
+              action={<LinkAction href={`/projects/${b.project.key}/board`} label="Open the board" />}
+            />
           ) : (
             <List dense>
               {activity.slice(0, 10).map((a) => (

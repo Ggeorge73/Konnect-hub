@@ -36,6 +36,7 @@ import type { ItemStatus, Priority, WorkItem } from '@/lib/domain/types';
 import { ItemKey, Mono, TypeIcon, VisibilityChip, EmptyState } from '@/components/ui/bits';
 import { useHotkeys } from '@/components/shell/useHotkeys';
 import { sortItems, groupItems, type SortKey, type GroupKey } from './tableModel';
+import { CreateItemAction } from '@/components/ui/EmptyActions';
 
 const COLUMNS: { id: string; label: string }[] = [
   { id: 'type', label: 'Type' },
@@ -315,6 +316,7 @@ export function ItemTable() {
         <EmptyState
           title="No work items yet"
           body="Create the first item with the Create button or press c."
+          action={editable ? <CreateItemAction projectKey={b.project.key} /> : undefined}
         />
       ) : (
         <Box sx={{ overflowX: 'auto' }}>

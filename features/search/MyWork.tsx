@@ -13,6 +13,7 @@ import {
 import type { WorkItem } from '@/lib/domain/types';
 import { EmptyState, ItemKey, PriorityMarker, TypeIcon } from '@/components/ui/bits';
 import { STATUS_LABEL } from '@/lib/domain/workflow';
+import { LinkAction } from '@/components/ui/EmptyActions';
 
 export function MyWork({ items }: { items: (WorkItem & { projectKey: string })[] }) {
   return (
@@ -23,6 +24,7 @@ export function MyWork({ items }: { items: (WorkItem & { projectKey: string })[]
           <EmptyState
             title="Nothing assigned to you"
             body="Items assigned to you across every project show up here."
+            action={<LinkAction href="/projects" label="Browse projects" />}
           />
         ) : (
           <List>

@@ -35,6 +35,7 @@ import { EmptyState, Mono } from '@/components/ui/bits';
 import { useProjectBundle } from '@/features/projects/ProjectFrame';
 import { useProjectMetrics } from './api';
 import { useChartTheme } from './chartTheme';
+import { LinkAction } from '@/components/ui/EmptyActions';
 
 /** Hidden from sight but read by screen readers: the data table behind each chart. */
 const srOnly = {
@@ -275,6 +276,7 @@ export function MetricsCharts({ m }: { m: ProjectMetrics }) {
             <EmptyState
               title="No active sprint"
               body="Start a sprint from the Backlog to see its burndown here."
+              action={<LinkAction href="backlog" label="Open the backlog" />}
             />
           </Paper>
         )}
