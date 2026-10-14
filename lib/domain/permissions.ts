@@ -39,11 +39,13 @@ export const canManageProject = (user: Profile, project: Project) =>
 export const canApproveGates = (user: Profile) => user.role === 'client_sponsor';
 export const canCreateProject = (user: Profile) => user.role === 'admin' || user.role === 'delivery_lead';
 
-/** Strip internal-only fields before sending a profile to a non-admin. */
+/** Strip internal-only fields before sending a profile to a viewer: cost rate is Admin-only, the U.S.-person flag Admin/Lead-only. */
 export function redactProfile(viewer: Profile, p: Profile): Profile {
   if (canSeeCostRates(viewer)) return p;
   const { costRate: _omit, ...rest } = p;
-  return rest;
+  if (canSeeFinancials(viewer)) return rest;
+  const { usPerson: _us, ...base } = rest;
+  return base as Profile;
 }
 
 export function redactProject(viewer: Profile, p: Project): Project {

@@ -39,6 +39,11 @@ describe('visibility and redaction', () => {
     expect(redactProfile(user('u_lead'), user('u_dev')).costRate).toBeUndefined();
     expect(redactProfile(user('u_admin'), user('u_dev')).costRate).toBe(95);
   });
+  it('the U.S.-person flag is only shown to Admins and Leads', () => {
+    expect(redactProfile(user('u_lead'), user('u_assoc')).usPerson).toBe(false);
+    expect(redactProfile(user('u_team'), user('u_assoc')).usPerson).toBeUndefined();
+    expect(redactProfile(user('u_sponsor'), user('u_dev')).usPerson).toBeUndefined();
+  });
   it('budget is hidden from associates and clients', () => {
     expect(redactProject(user('u_assoc'), project('EHR')).bac).toBe(0);
     expect(redactProject(user('u_sponsor'), project('EHR')).bac).toBe(0);

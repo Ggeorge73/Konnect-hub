@@ -191,6 +191,9 @@ export const memoryRepo: Repo = {
     if (d.projects.some((p) => p.key === key)) throw new ValidationError(`Key ${key} is already used.`);
     if (!d.orgs.some((o) => o.id === input.clientOrgId && o.type === 'client'))
       throw new ValidationError('Unknown client.');
+    // KH-36: restricted projects only allow U.S. persons, the lead included (mirrors the 0011 trigger).
+    if (input.restricted && !d.profiles.find((u) => u.id === input.leadId)?.usPerson)
+      throw new ValidationError('A restricted project needs a U.S.-person lead.');
     const project: Project = {
       id: newId('p'),
       key,
