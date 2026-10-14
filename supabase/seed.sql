@@ -382,4 +382,13 @@ insert into public.status_report_budgets (report_id, project_id, html) values
   (md5('sr_ehr_1')::uuid, 'c0000000-0000-4000-8000-000000000001', '<p>Budget at completion: $480,000 (fixed fee).</p>'),
   (md5('sr_rvb_1')::uuid, 'c0000000-0000-4000-8000-000000000002', '<p>Budget at completion: $310,000 (time and materials).</p>');
 
+-- AI assist (0014_ai_assist.sql; mirrors lib/data/seed-ai.ts): on for EHR, off for RVB; one
+-- dismissed Riverbend suggestion. ----------------------------------------------------------------
+insert into public.ai_settings (project_id, enabled, updated_by) values
+  ('c0000000-0000-4000-8000-000000000001', true, 'b0000000-0000-4000-8000-000000000002'),
+  ('c0000000-0000-4000-8000-000000000002', false, 'b0000000-0000-4000-8000-000000000002');
+insert into public.ai_suggestion_decisions (project_id, signal_key, decision, decided_by, decided_at) values
+  ('c0000000-0000-4000-8000-000000000002', 'stalled:' || md5('wi_rvb_3')::uuid, 'dismissed',
+   'b0000000-0000-4000-8000-000000000002', '2026-10-09T15:00:00Z');
+
 commit;

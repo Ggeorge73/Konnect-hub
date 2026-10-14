@@ -26,6 +26,7 @@ Copy `.env.example` to `.env.local`.
 | `AUTH_OAUTH_PROVIDERS`                                      | Social sign-in buttons: `google`, `azure`, or `none` (default: both) |
 | `RESEND_API_KEY`, `EMAIL_FROM`                              | Email notifications (Phase 3)                                        |
 | `ANTHROPIC_API_KEY`                                         | AI assist (Phase 5), server-side only                                |
+| `ANTHROPIC_MODEL`, `KH_AI_PROVIDER`, `KH_AI_RATE_PER_MIN`   | AI model (default `claude-opus-5-5`), `fake`/`off`, rate per minute  |
 | `SENTRY_DSN`                                                | Error monitoring                                                     |
 
 ## Data modes

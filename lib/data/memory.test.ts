@@ -15,6 +15,8 @@ import { memorySignalStore } from './notify';
 import { runLedgerContract } from './contract-ledger';
 import { memoryLedgerStore } from './ledger';
 import { memoryAuditStore } from './audit';
+import { runAiContract } from './contract-ai';
+import { memoryAiStore } from './ai';
 
 const as = (id: string) => sessionFor(id);
 
@@ -43,6 +45,7 @@ runLedgerContract(
   sessionFor,
   resetDb,
 );
+runAiContract('memory', () => ({ repo, ai: memoryAiStore, audit: memoryAuditStore }), sessionFor, resetDb);
 
 // Demo-store specifics: the audit trail lives in db().audit here (audit_log in Postgres).
 describe('memory repo — audit trail', () => {

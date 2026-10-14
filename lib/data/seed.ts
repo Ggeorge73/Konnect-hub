@@ -28,6 +28,7 @@ import { seedSignal } from './seed-signal';
 import { seedCapacity } from './seed-capacity';
 import { seedPortal, type WorkspaceState } from './seed-portal';
 import { seedLedger, type LedgerState } from './seed-ledger';
+import { seedAi, type AiState } from './seed-ai';
 
 export interface Db extends PulseDb {
   orgs: Organization[];
@@ -52,6 +53,7 @@ export interface Db extends PulseDb {
   capacity: ReturnType<typeof seedCapacity>['capacity'];
   workspace: WorkspaceState;
   ledger: LedgerState;
+  ai: AiState;
 }
 
 export const DEMO_PROJECT_KEY = 'EHR';
@@ -656,5 +658,6 @@ export function buildSeed(): Db {
     ...seedCapacity(members, projects, PROFILES),
     ...seedPortal(),
     ...seedLedger(),
+    ...seedAi(),
   };
 }
