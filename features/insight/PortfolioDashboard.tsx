@@ -4,6 +4,7 @@ import Link from 'next/link';
 import {
   Alert,
   Box,
+  Button,
   Chip,
   FormControl,
   InputLabel,
@@ -173,7 +174,15 @@ export function PortfolioDashboard() {
       </Grid>
       <Paper sx={{ borderRadius: 4 }}>
         {rows.length === 0 ? (
-          <EmptyState title="No matching projects" body="Clear a filter to see more projects." />
+          <EmptyState
+            title="No matching projects"
+            body="Clear a filter to see more projects."
+            action={
+              <Button variant="outlined" onClick={() => setF({})}>
+                Clear filters
+              </Button>
+            }
+          />
         ) : (
           <TableContainer>
             <Table size="small" aria-label="Projects">

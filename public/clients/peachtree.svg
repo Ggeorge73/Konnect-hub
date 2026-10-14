@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Peachtree Clinic Group logo">
+  <title>Peachtree Clinic Group</title>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#FFF7ED" stroke="#C2410C" stroke-width="2"/>
+  <path d="M32 50c-10 0-16-7-16-15 0-9 7-15 16-15s16 6 16 15c0 8-6 15-16 15z" fill="none" stroke="#C2410C" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M32 20c0 10 0 20 0 30" fill="none" stroke="#C2410C" stroke-width="2" stroke-linecap="round" opacity=".6"/>
+  <path d="M32 20c1-5 4-8 9-9-1 5-4 8-9 9z" fill="none" stroke="#15803D" stroke-width="2.5" stroke-linejoin="round"/>
+</svg>

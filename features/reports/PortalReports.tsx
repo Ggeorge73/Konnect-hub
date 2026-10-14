@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   List,
+  ListItem,
   ListItemButton,
   ListItemIcon,
   ListItemText,
@@ -40,16 +41,18 @@ export function PortalReportsSection({
       ) : (
         <List>
           {reports.map((r) => (
-            <ListItemButton key={r.id} component={Link} href={`/portal/${projectKey}/reports/${r.id}`}>
-              <ListItemIcon sx={{ minWidth: 36 }}>
-                <DescriptionOutlined color="primary" />
-              </ListItemIcon>
-              <ListItemText
-                primary={`Week of ${fmtWeek(r.weekStart)}`}
-                secondary={`Published ${r.publishedAt ? new Date(r.publishedAt).toLocaleDateString() : ''} by ${r.authorName}`}
-              />
-              <RagChip rag={r.rag} />
-            </ListItemButton>
+            <ListItem key={r.id} disablePadding>
+              <ListItemButton component={Link} href={`/portal/${projectKey}/reports/${r.id}`}>
+                <ListItemIcon sx={{ minWidth: 36 }}>
+                  <DescriptionOutlined color="primary" />
+                </ListItemIcon>
+                <ListItemText
+                  primary={`Week of ${fmtWeek(r.weekStart)}`}
+                  secondary={`Published ${r.publishedAt ? new Date(r.publishedAt).toLocaleDateString() : ''} by ${r.authorName}`}
+                />
+                <RagChip rag={r.rag} />
+              </ListItemButton>
+            </ListItem>
           ))}
         </List>
       )}

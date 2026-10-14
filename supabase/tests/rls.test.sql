@@ -1238,5 +1238,80 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 17. Portal: workspace settings, pending invites and client isolation in the portal
+--     (0010_portal_onboarding.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_org uuid;
+begin
+  -- Everyone signed in reads the single workspace row (it brands the portal); only Admins write.
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('workspace_settings'), 1, 'client reads workspace branding');
+  update public.workspace_settings set name = 'Hijacked' where id;
+  perform tests.as_user('lead');
+  update public.workspace_settings set name = 'Lead rename' where id;
+  perform tests.as_owner();
+  perform tests.ok((select name from public.workspace_settings) not in ('Hijacked', 'Lead rename'),
+                   'non-admins cannot change workspace settings');
+  perform tests.as_user('admin');
+  update public.workspace_settings set name = 'Konnector Delivery', onboarded_at = now(),
+         logo_url = '/clients/konnector.svg' where id;
+  perform tests.ok((select name from public.workspace_settings) = 'Konnector Delivery', 'admin renames the workspace');
+  perform tests.throws('update public.workspace_settings set logo_url = ''javascript:alert(1)'' where id',
+                       'workspace logo must be an image URL');
+  perform tests.throws('insert into public.workspace_settings (id) values (false)', 'a second workspace row');
+  perform tests.throws('delete from public.workspace_settings', 'admin deletes the workspace row');
+
+  -- The wizard's first client: Admins create client orgs with a logo; leads cannot.
+  insert into public.organizations (name, type, logo_url) values ('Wizard Client', 'client', '/clients/wizard.svg')
+  returning id into v_org;
+  perform tests.ok(v_org is not null, 'admin creates a client org');
+  perform tests.as_user('lead');
+  perform tests.throws('insert into public.organizations (name, type) values (''Lead Client'', ''client'')',
+                       'lead creates a client org');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('organizations', format('id = %L', v_org)), 0, 'client sees a new org with no shared project');
+
+  -- Invites: Admin only, Konnector roles only, lower-case unique emails, invited_by is the caller.
+  perform tests.as_user('admin');
+  insert into public.invites (email, role) values ('new.dev@konnectortech.com', 'team_member');
+  perform tests.eq(tests.count('invites'), 1, 'admin records a pending invite');
+  perform tests.throws('insert into public.invites (email, role) values (''new.dev@konnectortech.com'', ''associate'')',
+                       'duplicate invite');
+  perform tests.throws('insert into public.invites (email, role) values (''Upper@konnectortech.com'', ''team_member'')',
+                       'invite email not lower-case');
+  perform tests.throws('insert into public.invites (email, role) values (''sponsor2@client.example'', ''client_sponsor'')',
+                       'invite with a client role');
+  perform tests.throws(format('insert into public.invites (email, invited_by) values (''x@konnectortech.com'', %L)',
+                              tests.uid('lead')), 'invite forged as someone else');
+  perform tests.as_user('lead');
+  perform tests.eq(tests.count('invites'), 0, 'lead cannot see invites');
+  perform tests.throws('insert into public.invites (email) values (''lead.invite@konnectortech.com'')',
+                       'lead records an invite');
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('invites'), 0, 'client cannot see invites');
+
+  -- Portal isolation: Riverbend sees no Peachtree project, item, deliverable, gate review or report.
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('projects', format('id in (%L, %L)', tests.ehr(), tests.psr())), 0,
+                   'riverbend sees no Peachtree project');
+  perform tests.eq(tests.count('work_items', format('project_id in (%L, %L)', tests.ehr(), tests.psr())), 0,
+                   'riverbend sees no Peachtree work');
+  perform tests.eq(tests.count('deliverables', format('project_id = %L', tests.ehr())), 0,
+                   'riverbend sees no Peachtree deliverable');
+  perform tests.eq(tests.count('gate_reviews', format('project_id = %L', tests.ehr())), 0,
+                   'riverbend sees no Peachtree gate review');
+  perform tests.eq(tests.count('status_reports', format('project_id = %L', tests.ehr())), 0,
+                   'riverbend sees no Peachtree status report');
+  perform tests.eq(tests.count('organizations', 'name = ''Peachtree Clinic Group'''), 0,
+                   'riverbend sees no Peachtree org (logo included)');
+  perform tests.throws(format('select public.create_client_request(%L, %L)', tests.ehr(), 'Cross-org request'),
+                       'riverbend files a request into a Peachtree project');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;

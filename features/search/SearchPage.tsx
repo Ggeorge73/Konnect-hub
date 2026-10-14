@@ -3,6 +3,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import {
+  Button,
   Chip,
   List,
   ListItemButton,
@@ -80,7 +81,22 @@ export function SearchPage() {
             body="Search work items, projects and comments. Press / anywhere to open quick search."
           />
         ) : data.length === 0 && !isFetching ? (
-          <EmptyState title="No results" body="Try fewer filters or a different word." />
+          <EmptyState
+            title="No results"
+            body="Try fewer filters or a different word."
+            action={
+              <Button
+                variant="outlined"
+                onClick={() => {
+                  setType([]);
+                  setStatus([]);
+                  setVisibility('');
+                }}
+              >
+                Clear filters
+              </Button>
+            }
+          />
         ) : (
           <List>
             {data.map((r) => (

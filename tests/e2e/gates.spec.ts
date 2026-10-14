@@ -100,7 +100,7 @@ test('lead ticks all Execute criteria on a fresh project and requests a gate rev
 test('sponsor approves from the portal card in two clicks, passing re-auth', async ({ page }) => {
   await asUser(page, 'u_sponsor');
   await page.goto('/portal');
-  const card = page.getByRole('region', { name: /Gate reviews awaiting your decision/ });
+  const card = page.getByRole('region', { name: 'Needs your approval' }); // portal inbox (KH-33)
   const review = card.getByTestId(`gate-review-${KEY}`);
   await expect(review).toContainText('Gate 3 · Execute');
   await expect(review).not.toContainText('BAC'); // budget is internal unless shared

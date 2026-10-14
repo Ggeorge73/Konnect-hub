@@ -1,12 +1,14 @@
 import Link from 'next/link';
-import { Card, CardActionArea, CardContent, Stack, Typography } from '@mui/material';
+import { Button, Card, CardActionArea, Paper, Stack, Typography } from '@mui/material';
 import Grid from '@mui/material/Grid2';
 import { getRepo } from '@/lib/data';
 import { getSession } from '@/lib/session';
 import { PortalProjectCard } from '@/features/portal/PortalProjectCard';
-import { listPendingReviews } from '@/lib/data/gates';
-import { listAwaitingAcceptance } from '@/lib/data/deliverables';
-import { PortalGateCard } from '@/features/gates/PortalGateCard';
+import { ApprovalInbox } from '@/features/portal/ApprovalInbox';
+import { SubmitRequestButton } from '@/features/portal/RequestDialog';
+import { getApprovalInbox } from '@/lib/data/portal';
+import { canActOnApprovals, canSubmitRequest } from '@/lib/domain/portal';
+import { EmptyState } from '@/components/ui/bits';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Client portal' };
@@ -14,55 +16,63 @@ export const metadata = { title: 'Client portal' };
 export default async function Portal() {
   const s = await getSession();
   const repo = getRepo();
-  const projects = await repo.listProjects(s);
+  const [projects, inbox] = await Promise.all([repo.listProjects(s), getApprovalInbox(s)]);
   const bundles = await Promise.all(projects.map((p) => repo.getProjectBundle(s, p.key)));
-  const items = await repo.listItems(s, {});
-  const awaiting = items.filter((i) => i.status === 'client_review');
-  const deliverables = await listAwaitingAcceptance(s);
-  const pendingGates = s.user.role === 'client_sponsor' ? await listPendingReviews(s) : null;
+  const requestable = canSubmitRequest(s.user.role)
+    ? projects.map((p) => ({ id: p.id, key: p.key, name: p.name }))
+    : [];
   return (
     <Stack spacing={3}>
-      <Typography variant="h1">Welcome, {s.user.name.split(' ')[0]}</Typography>
-      {pendingGates && <PortalGateCard pending={pendingGates} />}
-      <Card>
-        <CardContent>
-          <Typography variant="h3" gutterBottom>
-            Needs your approval ({awaiting.length + deliverables.length})
-          </Typography>
-          {deliverables.map((d) => (
-            <Typography key={d.id} component="div" sx={{ py: 0.5 }}>
-              <Link href={`/portal/${d.projectKey}#deliverables`} style={{ color: 'inherit' }}>
-                Deliverable · {d.name}
-              </Link>
-            </Typography>
-          ))}
-          {awaiting.length + deliverables.length === 0 ? (
-            <Typography color="text.secondary">Nothing is waiting on you right now.</Typography>
-          ) : (
-            awaiting.map((i) => (
-              <Typography key={i.id} component="div" sx={{ py: 0.5 }}>
-                <Link
-                  href={`/portal/${projects.find((p) => p.id === i.projectId)?.key}?item=${i.key}`}
-                  style={{ color: 'inherit' }}
-                >
-                  {i.key} · {i.title}
-                </Link>
-              </Typography>
-            ))
-          )}
-        </CardContent>
-      </Card>
-      <Grid container spacing={2}>
-        {bundles.map((b) => (
-          <Grid key={b.project.id} size={{ xs: 12, md: 6 }}>
-            <Card>
-              <CardActionArea component={Link} href={`/portal/${b.project.key}`}>
-                <PortalProjectCard project={projects.find((p) => p.id === b.project.id)!} phases={b.phases} />
-              </CardActionArea>
-            </Card>
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        spacing={2}
+        alignItems={{ xs: 'flex-start', sm: 'center' }}
+      >
+        <Stack sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="h1">Welcome, {s.user.name.split(' ')[0]}</Typography>
+          <Typography color="text.secondary">{s.org.name}</Typography>
+        </Stack>
+        {requestable.length > 0 && <SubmitRequestButton projects={requestable} />}
+      </Stack>
+      <ApprovalInbox
+        initial={inbox}
+        canAct={canActOnApprovals(s.user.role)}
+        emptyAction={
+          projects.length > 0 ? (
+            <Button variant="outlined" href="#projects">
+              Check on your projects
+            </Button>
+          ) : undefined
+        }
+      />
+      <Stack spacing={1.5} component="section" id="projects" aria-labelledby="projects-title">
+        <Typography variant="h2" id="projects-title">
+          Your projects
+        </Typography>
+        {bundles.length === 0 ? (
+          <Paper sx={{ borderRadius: 4 }}>
+            <EmptyState
+              title="No projects shared yet"
+              body="Your Konnector delivery lead adds your projects here as soon as work starts. Reach out to them if you expected to see one."
+            />
+          </Paper>
+        ) : (
+          <Grid container spacing={2}>
+            {bundles.map((b) => (
+              <Grid key={b.project.id} size={{ xs: 12, md: 6 }}>
+                <Card>
+                  <CardActionArea component={Link} href={`/portal/${b.project.key}`}>
+                    <PortalProjectCard
+                      project={projects.find((p) => p.id === b.project.id)!}
+                      phases={b.phases}
+                    />
+                  </CardActionArea>
+                </Card>
+              </Grid>
+            ))}
           </Grid>
-        ))}
-      </Grid>
+        )}
+      </Stack>
     </Stack>
   );
 }
