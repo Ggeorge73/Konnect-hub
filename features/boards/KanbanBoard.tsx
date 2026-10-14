@@ -50,6 +50,7 @@ import { BoardCard } from './BoardCard';
 import { laneOf, positionAt, type Swimlane } from './ordering';
 import { EmptyState } from '@/components/ui/bits';
 import { useRealtime } from '@/features/realtime/useRealtime';
+import { CreateItemAction } from '@/components/ui/EmptyActions';
 
 const COLUMN_STEP = 292; // column width + gap
 
@@ -327,6 +328,7 @@ export function KanbanBoard() {
           <EmptyState
             title="The board is empty"
             body="Add the first work item. Press c anywhere to create one."
+            action={editable ? <CreateItemAction projectKey={b.project.key} /> : undefined}
           />
         </Paper>
       ) : (

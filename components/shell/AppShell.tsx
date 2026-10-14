@@ -26,6 +26,7 @@ import {
 } from '@mui/material';
 import DashboardOutlined from '@mui/icons-material/DashboardOutlined';
 import AssignmentIndOutlined from '@mui/icons-material/AssignmentIndOutlined';
+import AccessTimeOutlined from '@mui/icons-material/AccessTimeOutlined';
 import FolderOutlined from '@mui/icons-material/FolderOutlined';
 import ViewKanbanOutlined from '@mui/icons-material/ViewKanbanOutlined';
 import TimelineOutlined from '@mui/icons-material/TimelineOutlined';
@@ -229,6 +230,7 @@ function SideNav({
   const items = [
     { label: 'Portfolio', href: '/', icon: DashboardOutlined },
     { label: 'My Work', href: '/my-work', icon: AssignmentIndOutlined },
+    { label: 'Timesheet', href: '/timesheet', icon: AccessTimeOutlined },
     { label: 'Projects', href: '/projects', icon: FolderOutlined },
     { label: 'Boards', href: pk ? `/projects/${pk}/board` : '/projects', icon: ViewKanbanOutlined },
     { label: 'Timeline', href: pk ? `/projects/${pk}/timeline` : '/projects', icon: TimelineOutlined },

@@ -19,18 +19,55 @@ const ehr = () => db().projects.find((p) => p.key === 'EHR')!;
 beforeEach(() => resetDb());
 
 describe('EVM from the seeded baseline', () => {
-  it('reads AC from seeded actuals through the actualCostFor hook', () => {
-    expect(actualCostFor('p_ehr', '2026-10-12')).toBe(20_000_000);
+  it('reads AC through actualCostFor: seeded actuals before the first approved time, then approved time × rate', () => {
+    // Before the cutover (Mon 5 Oct, EHR's first approved entry) AC is the seeded weekly actuals.
     expect(actualCostFor('p_ehr', '2026-08-06')).toBe(0);
+    expect(actualCostFor('p_ehr', '2026-10-02')).toBe(18_000_000);
+    expect(actualCostFor('p_ehr', '2026-10-04')).toBe(18_000_000);
+    // Mon 5 Oct: Lara 5 h × $105 + Adeoba 6.5 h × $95 + Tiara 4 h × $80 + Sam 6 h × $70 = $1,882.50.
+    expect(actualCostFor('p_ehr', '2026-10-05')).toBe(18_000_000 + 188_250);
+    // Whole week: $9,260 of approved time replaces the seeded $20,000 for 9 Oct.
+    expect(actualCostFor('p_ehr', '2026-10-12')).toBe(18_926_000);
+    // No approved time: seeded actuals unchanged.
     expect(actualCostFor('p_rvb', '2026-10-12')).toBe(2_800_000);
     expect(actualCostFor('p_new', '2026-10-12')).toBe(0);
   });
-  it('gives EHR EV 37.5% of BAC and CPI 0.900 on 12 Oct 2026', () => {
+  it('ignores draft, submitted and rejected time, and counts newly approved time at the person’s rate', () => {
+    const entries = db().ledger.timeEntries;
+    const base = { projectId: 'p_ehr', itemId: 'wi_ehr_7', userId: 'u_dev', billable: true, note: '' };
+    const meta = { submittedAt: null, decidedBy: null, decidedAt: null, rejectReason: null };
+    const t = '2026-10-12T09:00:00.000Z';
+    for (const status of ['draft', 'submitted', 'rejected'] as const)
+      entries.push({
+        ...base,
+        ...meta,
+        id: `te_x_${status}`,
+        date: '2026-10-12',
+        hours: 8,
+        status,
+        createdAt: t,
+        updatedAt: t,
+      });
+    expect(actualCostFor('p_ehr', '2026-10-12')).toBe(18_926_000);
+    entries.push({
+      ...base,
+      ...meta,
+      id: 'te_x_ok',
+      date: '2026-10-12',
+      hours: 2.5,
+      status: 'approved',
+      createdAt: t,
+      updatedAt: t,
+    });
+    expect(actualCostFor('p_ehr', '2026-10-11')).toBe(18_926_000);
+    expect(actualCostFor('p_ehr', '2026-10-12')).toBe(18_926_000 + 23_750);
+  });
+  it('gives EHR EV 37.5% of BAC and CPI ≈ 0.951 on 12 Oct 2026', () => {
     const e = projectEvm(ehr(), '2026-10-12');
     expect(e.percentComplete).toBeCloseTo(37.5, 10);
     expect(formatMoney(e.ev)).toBe('$180,000.00');
-    expect(formatMoney(e.ac)).toBe('$200,000.00');
-    expect(formatRatio(e.cpi)).toBe('0.900');
+    expect(formatMoney(e.ac)).toBe('$189,260.00');
+    expect(formatRatio(e.cpi)).toBe('0.951');
     expect(e.spi!).toBeGreaterThan(0.85);
     expect(e.spi!).toBeLessThan(0.87);
   });
@@ -55,7 +92,7 @@ describe('project dashboard', () => {
     expect(v.evmAccess).toBe('full');
     expect(v.evm?.bac).toBe(48_000_000);
     expect(v.burn?.length).toBeGreaterThan(10);
-    expect(v.burn?.find((b) => b.date === '2026-10-12')?.actual).toBe(20_000_000);
+    expect(v.burn?.find((b) => b.date === '2026-10-12')?.actual).toBe(18_926_000);
     expect(v.suggested?.rag).toBe('amber');
     expect(v.canOverride).toBe(true);
     expect(v.topRisks.map((r) => r.score)).toEqual([16, 12, 6]);
@@ -88,7 +125,7 @@ describe('project dashboard', () => {
     await setShareBudget(as('u_lead'), 'EHR', true);
     const v = await getDashboard(as('u_cviewer'), 'EHR', NOW);
     expect(v.evmAccess).toBe('full');
-    expect(roundHalfEven(v.evm!.ac!)).toBe(20_000_000);
+    expect(roundHalfEven(v.evm!.ac!)).toBe(18_926_000);
     expect(v.burn).not.toBeNull();
   });
   it('hides other clients projects', async () => {

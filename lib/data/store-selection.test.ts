@@ -6,6 +6,12 @@ import { memorySprintStore, sprintStore } from './sprints';
 import { gateStore, memoryGateStore } from './gates';
 import { deliverableStore, memoryDeliverableStore } from './deliverables';
 import { acceptanceRecordStore, memoryAcceptanceRecordStore } from './acceptance-record';
+import { insightStore, memoryInsightStore } from './insight';
+import { memoryMetricsStore, metricsStore } from './metrics';
+import { memoryReportStore, reportStore } from './reports';
+import { memorySignalStore, signalStore } from './notify';
+import { ledgerStore, memoryLedgerStore } from './ledger';
+import { auditStore, memoryAuditStore } from './audit';
 
 const all = () => [
   [getRepo(), memoryRepo],
@@ -14,6 +20,12 @@ const all = () => [
   [gateStore(), memoryGateStore],
   [deliverableStore(), memoryDeliverableStore],
   [acceptanceRecordStore(), memoryAcceptanceRecordStore],
+  [insightStore(), memoryInsightStore],
+  [metricsStore(), memoryMetricsStore],
+  [reportStore(), memoryReportStore],
+  [signalStore(), memorySignalStore],
+  [ledgerStore(), memoryLedgerStore],
+  [auditStore(), memoryAuditStore],
 ];
 
 describe('store selection', () => {

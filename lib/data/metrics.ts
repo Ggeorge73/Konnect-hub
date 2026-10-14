@@ -3,12 +3,26 @@ import { canSeeProject, isInternalRole } from '../domain/permissions';
 import { isoDay, projectMetrics, type ProjectMetrics } from '../domain/metrics';
 import { db } from './memory';
 import { ForbiddenError, NotFoundError } from './errors';
+import { isPostgresEnabled } from './index';
+import { postgresMetricsStore } from './metrics-postgres';
 
 /**
  * Agile metrics for one project (AGL-01). Internal users only: the charts count internal items.
  * Mirrors the `status_history` RLS in supabase/migrations/0007_pulse.sql.
+ *
+ * `MetricsStore` has two implementations, picked like getRepo(): the demo store below and the
+ * Postgres + RLS store in metrics-postgres.ts (status history written by the 0007 trigger).
+ * Shared behaviour: lib/data/contract-pulse.ts.
  */
-export function getProjectMetrics(s: Session, key: string, now: Date = new Date()): ProjectMetrics {
+export interface MetricsStore {
+  getProjectMetrics(s: Session, key: string, now?: Date): Promise<ProjectMetrics>;
+}
+
+async function memGetProjectMetrics(
+  s: Session,
+  key: string,
+  now: Date = new Date(),
+): Promise<ProjectMetrics> {
   const d = db();
   const p: Project | undefined = d.projects.find(
     (x) => (x.key === key.toUpperCase() || x.id === key) && !x.deletedAt,
@@ -24,3 +38,12 @@ export function getProjectMetrics(s: Session, key: string, now: Date = new Date(
     today: isoDay(now),
   });
 }
+
+export const memoryMetricsStore: MetricsStore = { getProjectMetrics: memGetProjectMetrics };
+
+/** The active metrics store: Postgres + RLS when getRepo() would pick Postgres, else the demo store. */
+export const metricsStore = (): MetricsStore =>
+  isPostgresEnabled() ? postgresMetricsStore() : memoryMetricsStore;
+
+export const getProjectMetrics: MetricsStore['getProjectMetrics'] = (...a) =>
+  metricsStore().getProjectMetrics(...a);

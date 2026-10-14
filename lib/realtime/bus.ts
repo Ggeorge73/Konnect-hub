@@ -8,8 +8,13 @@
  * through the normal, permission-checked API. `shared` says whether a client user may learn
  * that the event happened at all (the item, and for comments the comment, is shared).
  *
- * Supabase mode: this bus is replaced by Supabase Realtime. `useRealtime()` keeps its interface
- * and subscribes to a channel per project instead of the EventSource:
+ * PRODUCTION (Supabase): Supabase Realtime REPLACES this bus. The bus lives in one server
+ * process's memory, so with several instances (or serverless) an event published on one never
+ * reaches an EventSource held by another. The Postgres write paths (lib/data/*-postgres.ts,
+ * notify-postgres.ts) still publish here after their transaction commits, which keeps
+ * /api/realtime working for a single process (demo mode, `KH_DATA=postgres` locally), but that is
+ * a convenience, not the production transport. `useRealtime()` keeps its interface and subscribes
+ * to a channel per project instead of the EventSource:
  *   supabase.channel(`project:${projectId}`)
  *     .on('postgres_changes', { event: '*', schema: 'public', table: 'work_items',
  *          filter: `project_id=eq.${projectId}` }, onEvent)

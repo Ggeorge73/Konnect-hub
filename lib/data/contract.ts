@@ -140,6 +140,29 @@ export function runRepoContract(
       ).rejects.toThrow('already used');
     });
 
+    it('a restricted project cannot have a non-U.S. lead', async () => {
+      const s = await as('u_admin');
+      const riverbend = (await repo.listOrgs(s)).find((o) => o.name === 'Riverbend County IT')!;
+      const sam = (await repo.listPeople(s)).find((u) => u.name === 'Sam Rivera')!;
+      await expect(
+        repo.createProject(s, {
+          name: 'Export Controlled',
+          key: 'EXC',
+          clientOrgId: riverbend.id,
+          leadId: sam.id,
+          startDate: '2026-11-01',
+          targetDate: '2027-03-01',
+          methodology: 'hybrid',
+          contractType: 'fixed_fee',
+          bac: 1,
+          description: '',
+          templateId: 'kdf-hybrid',
+          restricted: true,
+        }),
+      ).rejects.toThrow();
+      expect((await repo.listProjects(s)).some((x) => x.key === 'EXC')).toBe(false);
+    });
+
     it('team members cannot create projects', async () => {
       await expect(repo.createProject(await as('u_team'), {} as never)).rejects.toThrow('Only Admins');
     });

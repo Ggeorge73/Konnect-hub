@@ -4,6 +4,7 @@ import Link from 'next/link';
 import {
   Alert,
   Box,
+  Button,
   Chip,
   FormControl,
   InputLabel,
@@ -39,6 +40,7 @@ import { EmptyState, Mono, RagChip } from '@/components/ui/bits';
 import { RAG_COLORS } from '@/lib/theme';
 import { usePortfolio } from './api';
 import { ChartTable } from './ChartTable';
+import { ExportMenu } from '@/features/exports/ExportMenu';
 import { chartColors } from './BudgetBurnChart';
 
 function MiniBar({
@@ -162,6 +164,7 @@ export function PortfolioDashboard() {
           'RAG',
           (['green', 'amber', 'red'] as Rag[]).map((r) => ({ id: r, name: RAG_TEXT[r] })),
         )}
+        <ExportMenu entity="portfolio" params={{ ...f }} />
       </Stack>
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, md: 6 }}>
@@ -173,7 +176,15 @@ export function PortfolioDashboard() {
       </Grid>
       <Paper sx={{ borderRadius: 4 }}>
         {rows.length === 0 ? (
-          <EmptyState title="No matching projects" body="Clear a filter to see more projects." />
+          <EmptyState
+            title="No matching projects"
+            body="Clear a filter to see more projects."
+            action={
+              <Button variant="outlined" onClick={() => setF({})}>
+                Clear filters
+              </Button>
+            }
+          />
         ) : (
           <TableContainer>
             <Table size="small" aria-label="Projects">

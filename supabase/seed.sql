@@ -276,14 +276,43 @@ insert into public.raid_links (project_id, raid_id, item_id) values
   ('c0000000-0000-4000-8000-000000000002', md5('rd_rvb_1')::uuid, md5('wi_rvb_2')::uuid);
 
 -- Time, allocations, status reports -----------------------------------------------
-insert into public.time_entries (id, project_id, item_id, user_id, entry_date, hours, note) values
-  (md5('te_1')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('wi_ehr_7')::uuid, 'b0000000-0000-4000-8000-000000000004', '2026-10-07', 6, 'Dry-run'),
-  (md5('te_2')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('wi_ehr_12')::uuid, 'b0000000-0000-4000-8000-000000000005', '2026-10-07', 3, 'Vendor call'),
-  (md5('te_3')::uuid, 'c0000000-0000-4000-8000-000000000002', md5('wi_rvb_3')::uuid, 'b0000000-0000-4000-8000-000000000004', '2026-10-07', 2, 'Baseline');
+-- Time lifecycle (0012_ledger.sql): one approved EHR entry feeds EVM actual cost; the submitted
+-- and draft entries show that only approved time counts.
+insert into public.time_entries (id, project_id, item_id, user_id, entry_date, hours, note, status, submitted_at, decided_by, decided_at) values
+  (md5('te_1')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('wi_ehr_7')::uuid, 'b0000000-0000-4000-8000-000000000004', '2026-10-07', 6, 'Dry-run',
+   'approved', '2026-10-09 17:00+00', 'b0000000-0000-4000-8000-000000000002', '2026-10-10 09:00+00'),
+  (md5('te_2')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('wi_ehr_12')::uuid, 'b0000000-0000-4000-8000-000000000005', '2026-10-07', 3, 'Vendor call',
+   'submitted', '2026-10-09 17:00+00', null, null),
+  (md5('te_3')::uuid, 'c0000000-0000-4000-8000-000000000002', md5('wi_rvb_3')::uuid, 'b0000000-0000-4000-8000-000000000004', '2026-10-07', 2, 'Baseline',
+   'draft', null, null, null);
 
-insert into public.allocations (id, project_id, user_id, start_date, end_date, pct) values
-  (md5('al_1')::uuid, 'c0000000-0000-4000-8000-000000000001', 'b0000000-0000-4000-8000-000000000004', '2026-08-03', '2027-01-29', 80),
-  (md5('al_2')::uuid, 'c0000000-0000-4000-8000-000000000002', 'b0000000-0000-4000-8000-000000000004', '2026-09-14', '2027-04-30', 20);
+-- Weekly allocations (0011_capacity.sql; mirrors lib/data/seed-capacity.ts): every member's
+-- hours per week × allocation % for the next 12 ISO weeks within the project window, plus the
+-- cutover spike (u_dev 40 h on EHR in the third week = 120% with RVB).
+insert into public.allocations (project_id, user_id, start_date, end_date, pct, hours)
+select m.project_id, m.user_id, w::date, w::date + 6, 0,
+       case when m.user_id = 'b0000000-0000-4000-8000-000000000004' and m.project_id = 'c0000000-0000-4000-8000-000000000001'
+                 and w::date = date_trunc('week', current_date)::date + 14 then 40
+            else round(coalesce(nullif(u.hours_per_week, 0), 40) * m.allocation_pct) / 100 end
+from public.project_members m
+join public.profiles u on u.id = m.user_id
+join public.projects p on p.id = m.project_id,
+generate_series(date_trunc('week', current_date), date_trunc('week', current_date) + interval '11 weeks', interval '7 days') w
+where m.allocation_pct > 0
+  and w::date >= date_trunc('week', p.start_date)::date
+  and w::date <= date_trunc('week', p.target_date)::date;
+
+-- Directory certifications and locations (0011_capacity.sql; mirrors SEED_EXTRAS).
+update public.profiles u set certifications = x.certs, location = x.loc
+from (values
+  ('u_admin', '{PMP,"SAFe SPC"}'::text[], 'Atlanta, GA'),
+  ('u_lead', '{PMP,CSM}'::text[], 'Atlanta, GA'),
+  ('u_team', '{"ISTQB Foundation"}'::text[], 'Chicago, IL'),
+  ('u_dev', '{"AWS Developer Associate"}'::text[], 'Raleigh, NC'),
+  ('u_assoc', '{"HL7 FHIR R4"}'::text[], 'London, UK')
+) x(legacy, certs, loc)
+join _u on _u.legacy = x.legacy
+where u.id = _u.id;
 
 insert into public.status_reports (id, project_id, period_start, period_end, rag, summary, visibility, author_id, published_at) values
   (md5('sr_ehr_1')::uuid, 'c0000000-0000-4000-8000-000000000001', '2026-09-28', '2026-10-02', 'amber',

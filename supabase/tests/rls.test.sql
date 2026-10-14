@@ -245,9 +245,12 @@ begin
   perform tests.as_user('admin');
   perform tests.eq(tests.count('projects'), 3, 'admin sees all projects');
 
-  -- Restricted project: membership is not enough without US-person status.
+  -- Restricted project: membership is not enough without US-person status. (0011 refuses the
+  -- membership itself; triggers are bypassed here to model a legacy row and prove RLS still hides RVB.)
   perform tests.as_owner();
+  set local session_replication_role = replica;
   insert into public.project_members (project_id, user_id) values (tests.rvb(), tests.uid('assoc'));
+  set local session_replication_role = origin;
   perform tests.as_user('assoc');
   perform tests.eq(tests.count('projects', format('id = %L', tests.rvb())), 0, 'non-US associate sees restricted RVB');
   perform tests.eq(tests.count('work_items', format('project_id = %L', tests.rvb())), 0, 'non-US associate sees RVB items');
@@ -1044,6 +1047,382 @@ begin
   perform tests.eq(tests.count('notifications', 'kind = ''gate_requested'''), 1, 'sponsor gets the shared notification');
   perform tests.throws(format('update public.notifications set visibility = ''internal'' where user_id = %L',
                               tests.uid('sponsor')), 'client notification flipped to internal');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 18. Capacity: weekly allocations, grid totals, directory tags and the U.S.-person rule on
+--     restricted projects (0011_capacity.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_week date := date_trunc('week', current_date)::date;
+  v_tue date := date_trunc('week', current_date)::date + 1;
+begin
+  -- Restricted RVB: a Lead's direct writes putting the non-U.S. associate on it are refused.
+  perform tests.as_user('lead');
+  perform tests.throws(format('insert into public.project_members (project_id, user_id, project_role, allocation_pct) values (%L, %L, ''Integration'', 50)',
+                              tests.rvb(), tests.uid('assoc')), 'lead adds non-US member to restricted RVB');
+  perform tests.throws(format('insert into public.allocations (project_id, user_id, start_date, end_date, pct, hours) values (%L, %L, %L, %L, 0, 8)',
+                              tests.rvb(), tests.uid('assoc'), v_week, v_week + 6), 'lead allocates non-US person on RVB');
+  perform tests.throws(format('update public.work_items set assignee_id = %L where id = %L',
+                              tests.uid('assoc'), tests.item('RVB-1')), 'lead assigns non-US person to an RVB item');
+  perform tests.throws(format('insert into public.work_items (project_id, type, title, reporter_id, assignee_id) values (%L, ''task'', ''x'', %L, %L)',
+                              tests.rvb(), tests.uid('lead'), tests.uid('assoc')), 'lead creates an RVB item for a non-US assignee');
+  perform tests.eq(tests.count('project_members', format('project_id = %L and user_id = %L', tests.rvb(), tests.uid('assoc'))), 0,
+                   'no non-US member on RVB');
+  -- U.S. persons are fine on RVB; non-US people are fine on unrestricted projects.
+  insert into public.project_members (project_id, user_id, project_role, allocation_pct)
+  values (tests.rvb(), tests.uid('team'), 'QA', 10);
+  update public.work_items set assignee_id = tests.uid('team') where id = tests.item('RVB-1');
+  update public.work_items set assignee_id = tests.uid('assoc') where id = tests.item('EHR-12');
+  perform tests.ok((select assignee_id = tests.uid('assoc') from public.work_items where id = tests.item('EHR-12')),
+                   'non-US assignee on unrestricted EHR');
+
+  -- Even the table owner cannot bypass the rule.
+  perform tests.as_owner();
+  perform tests.throws(format('insert into public.project_members (project_id, user_id) values (%L, %L)',
+                              tests.rvb(), tests.uid('assoc')), 'owner adds non-US member to RVB');
+
+  -- Flipping to restricted is refused while non-U.S. people are on the project, naming them.
+  perform tests.as_user('lead');
+  begin
+    update public.projects set restricted = true where id = tests.ehr();
+    perform tests.ok(false, 'EHR flipped to restricted with a non-US member');
+  exception when check_violation then
+    perform tests.ok(sqlerrm like '%remove these non-U.S. people first: Sam Rivera.', 'flip refusal lists Sam Rivera: ' || sqlerrm);
+  end;
+  perform tests.as_user('admin');
+  update public.projects set restricted = true where id = tests.psr();
+  perform tests.ok((select restricted from public.projects where id = tests.psr()), 'admin restricts PSR (US people only)');
+
+  -- An admin cannot clear the U.S.-person flag of someone on a restricted project.
+  perform tests.throws(format('update public.profiles set us_person = false where id = %L', tests.uid('dev')),
+                       'clear US flag of an RVB member');
+  update public.profiles set us_person = false where id = tests.uid('cmember');
+  perform tests.ok((select not us_person from public.profiles where id = tests.uid('cmember')), 'admin clears a free person''s flag');
+end $$;
+rollback;
+
+begin;
+do $$
+declare
+  v_week date := date_trunc('week', current_date)::date;
+  v_row public.allocations;
+begin
+  -- Weekly rows: Monday start, Sunday end, pct derived from hours / capacity, one per week.
+  perform tests.as_user('lead');
+  insert into public.allocations (project_id, user_id, start_date, end_date, pct, hours)
+  values (tests.ehr(), tests.uid('team'), v_week + 84, v_week, 0, 30) returning * into v_row;
+  perform tests.ok(v_row.end_date = v_row.start_date + 6, 'allocation end_date is the Sunday');
+  perform tests.ok(v_row.pct = 75, format('pct derived from hours (got %s)', v_row.pct));
+  perform tests.throws(format('insert into public.allocations (project_id, user_id, start_date, end_date, pct, hours) values (%L, %L, %L, %L, 0, 8)',
+                              tests.ehr(), tests.uid('team'), v_week + 85, v_week + 91), 'allocation not on a Monday');
+  perform tests.throws(format('insert into public.allocations (project_id, user_id, start_date, end_date, pct, hours) values (%L, %L, %L, %L, 0, 8)',
+                              tests.ehr(), tests.uid('team'), v_week + 84, v_week + 90), 'duplicate weekly allocation');
+  perform tests.throws(format('insert into public.allocations (project_id, user_id, start_date, end_date, pct, hours) values (%L, %L, %L, %L, 0, 8)',
+                              tests.psr(), tests.uid('team'), v_week + 84, v_week + 90), 'lead writes allocations on PSR (not theirs)');
+  perform tests.as_user('team');
+  update public.allocations set hours = 1 where project_id = tests.ehr();
+  perform tests.eq(tests.count('allocations', format('project_id = %L and hours = 1', tests.ehr())), 0, 'team edit had no effect');
+
+  -- Grid totals cover every project (PSR is invisible to the Lead) but only for planning roles.
+  perform tests.as_user('lead');
+  perform tests.eq(tests.count('allocations', format('project_id = %L', tests.psr())), 0, 'lead sees no PSR allocations');
+  perform tests.ok((select hours = 32 from public.capacity_week_totals(v_week, v_week) where user_id = tests.uid('team')),
+                   'lead sees Tiara''s total of 32 h including PSR');
+  perform tests.ok((select hours = 48 from public.capacity_week_totals(v_week + 14, v_week + 14) where user_id = tests.uid('dev')),
+                   'seeded spike: dev at 48 h in the third week');
+  perform tests.as_user('team');
+  perform tests.ok(exists (select 1 from public.capacity_week_totals(v_week, v_week)), 'team member reads grid totals');
+  perform tests.as_user('assoc');
+  perform tests.eq((select count(*) from public.capacity_week_totals(v_week, v_week + 77)), 0, 'associate reads grid totals');
+  perform tests.as_user('sponsor');
+  perform tests.eq((select count(*) from public.capacity_week_totals(v_week, v_week + 77)), 0, 'client reads grid totals');
+  perform tests.eq(tests.count('allocations'), 0, 'client sees allocations');
+
+  -- Directory tags: Leads and Admins edit skills / certifications of internal staff only.
+  perform tests.as_user('lead');
+  perform public.set_person_tags(tests.uid('team'), '{QA,Accessibility}', '{ISTQB}');
+  perform tests.ok((select skills = '{QA,Accessibility}' and certifications = '{ISTQB}' from public.profiles
+                    where id = tests.uid('team')), 'lead edits skills and certifications');
+  perform tests.throws(format('select public.set_person_tags(%L, ''{x}'', null)', tests.uid('sponsor')), 'lead tags a client');
+  update public.profiles set certifications = '{x}' where id = tests.uid('team');
+  perform tests.ok((select certifications = '{ISTQB}' from public.profiles where id = tests.uid('team')),
+                   'lead cannot edit another profile directly');
+  perform tests.as_user('team');
+  perform tests.throws(format('select public.set_person_tags(%L, ''{x}'', null)', tests.uid('dev')), 'team member edits tags');
+  perform tests.as_user('assoc');
+  perform tests.eq(tests.count('profile_rates'), 0, 'associate reads cost rates');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 20. Shield: Postgres data path for the Sprint 3 domains (0013_shield_sprint3_postgres.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_j jsonb;
+  who text;
+begin
+  -- Server-only helpers: signed-in users and anon cannot execute them.
+  foreach who in array array['anon', 'authenticated'] loop
+    perform tests.ok(not has_function_privilege(who, 'public.user_can_see_project(uuid, uuid)', 'execute'),
+                     who || ' cannot execute user_can_see_project');
+    perform tests.ok(not has_function_privilege(who, 'public.project_evm_inputs(uuid)', 'execute'),
+                     who || ' cannot execute project_evm_inputs');
+  end loop;
+  perform tests.ok(has_function_privilege('service_role', 'public.project_evm_inputs(uuid)', 'execute'),
+                   'service_role executes project_evm_inputs');
+  perform tests.as_user('dev');
+  perform tests.throws(format('select public.project_evm_inputs(%L)', tests.ehr()), 'team member reads EVM inputs');
+  perform tests.throws(format('select public.user_can_see_project(%L, %L)', tests.uid('rsponsor'), tests.ehr()),
+                       'signed-in user probes project access of another user');
+
+  -- user_can_see_project mirrors canSeeProject for any user.
+  perform tests.as_owner();
+  perform tests.ok(public.user_can_see_project(tests.uid('lead'), tests.ehr()), 'lead sees EHR');
+  perform tests.ok(public.user_can_see_project(tests.uid('sponsor'), tests.ehr()), 'sponsor sees own org project');
+  perform tests.ok(not public.user_can_see_project(tests.uid('rsponsor'), tests.ehr()), 'other org never sees EHR');
+  perform tests.ok(not public.user_can_see_project(tests.uid('assoc'), tests.rvb()), 'associate does not see RVB');
+  perform tests.ok(public.user_can_see_project(tests.uid('admin'), tests.rvb()), 'admin sees every project');
+  perform tests.ok(not public.user_can_see_project(gen_random_uuid(), tests.ehr()), 'unknown user sees nothing');
+
+  -- EVM inputs: BAC in cents, actual cost = approved hours x cost rate, EV baseline from weighted deliverables.
+  v_j := public.project_evm_inputs(tests.ehr());
+  perform tests.eq((v_j ->> 'bac_cents')::bigint, 48000000, 'EHR BAC in cents');
+  perform tests.eq(coalesce((select sum((a ->> 'amount_cents')::bigint)::bigint from jsonb_array_elements(v_j -> 'actuals') a), 0),
+                   coalesce((select round(sum(t.hours * r.cost_rate) * 100)::bigint from public.time_entries t
+                    join public.profile_rates r on r.profile_id = t.user_id
+                    where t.project_id = tests.ehr() and t.status = 'approved'), 0),
+                   'actual cost is approved time x cost rate');
+  perform tests.ok(exists (select 1 from public.time_entries t where t.project_id = tests.ehr() and t.status <> 'approved'),
+                   'EHR has unapproved time that must not count');
+  perform tests.eq(jsonb_array_length(v_j -> 'milestones'), 0, 'no EV milestones without weights');
+  update public.deliverables set ev_weight = 2 where project_id = tests.ehr();
+  v_j := public.project_evm_inputs(tests.ehr());
+  perform tests.eq(jsonb_array_length(v_j -> 'milestones'), 1, 'weighted deliverable becomes an EV milestone');
+  perform tests.eq((v_j -> 'milestones' -> 0 ->> 'percent_complete')::int, 0, 'not accepted: 0% complete');
+
+  -- The project Lead reads the dashboard audit trail of a project they manage (not other audit rows).
+  perform tests.as_user('lead');
+  perform set_config('kh.client_ip', '203.0.113.7', true);
+  update public.projects set rag = 'amber', rag_reason = 'Vendor slipped' where id = tests.ehr();
+  perform set_config('kh.client_ip', 'not-an-ip', true);
+  update public.projects set share_budget = true where id = tests.ehr();
+  perform tests.eq(tests.count('audit_log', format('entity_id = %L and action = ''project.rag_override''', tests.ehr())), 1,
+                   'lead reads the RAG audit of their project');
+  perform tests.eq(tests.count('audit_log', format('entity_id = %L and action = ''dashboard.share_budget''', tests.ehr())), 1,
+                   'lead reads the budget-sharing audit');
+  perform tests.eq(tests.count('audit_log', 'action = ''project.create'''), 0, 'lead reads no other audit rows');
+  insert into public.audit_log (actor_id, project_id, action, entity, entity_id)
+  values (tests.uid('lead'), tests.ehr(), 'dashboard.export_pdf', 'project', tests.ehr()::text);
+  perform tests.eq(tests.count('audit_log', format('entity_id = %L and action = ''dashboard.export_pdf''', tests.ehr())), 1,
+                   'lead reads the PDF export audit');
+  foreach who in array array['team', 'dev', 'assoc', 'sponsor', 'rsponsor'] loop
+    perform tests.as_user(who);
+    perform tests.eq(tests.count('audit_log'), 0, who || ' reads no dashboard audit');
+  end loop;
+  perform tests.as_owner();
+  perform tests.ok((select ip = '203.0.113.7'::inet from public.audit_log where action = 'project.rag_override'
+                    and entity_id = tests.ehr()::text), 'RAG override audit records the client IP');
+  perform tests.ok((select ip is null from public.audit_log where action = 'dashboard.share_budget'
+                    and entity_id = tests.ehr()::text), 'an invalid IP is dropped, not an error');
+
+  -- The internal RAG reason of a report lives in the internal working copy.
+  perform tests.as_user('lead');
+  update public.status_report_drafts set rag_reason = 'Internal: vendor dispute' where report_id = md5('sr_ehr_1')::uuid;
+  perform tests.eq(tests.count('status_report_drafts', 'rag_reason is not null'), 1, 'lead reads internal RAG reason');
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('status_report_drafts'), 0, 'sponsor reads no working copy');
+  perform tests.eq(tests.count('status_reports', 'rag_reason like ''Internal%'''), 0, 'client copy keeps its reason');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 17. Portal: workspace settings, pending invites and client isolation in the portal
+--     (0010_portal_onboarding.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_org uuid;
+begin
+  -- Everyone signed in reads the single workspace row (it brands the portal); only Admins write.
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('workspace_settings'), 1, 'client reads workspace branding');
+  update public.workspace_settings set name = 'Hijacked' where id;
+  perform tests.as_user('lead');
+  update public.workspace_settings set name = 'Lead rename' where id;
+  perform tests.as_owner();
+  perform tests.ok((select name from public.workspace_settings) not in ('Hijacked', 'Lead rename'),
+                   'non-admins cannot change workspace settings');
+  perform tests.as_user('admin');
+  update public.workspace_settings set name = 'Konnector Delivery', onboarded_at = now(),
+         logo_url = '/clients/konnector.svg' where id;
+  perform tests.ok((select name from public.workspace_settings) = 'Konnector Delivery', 'admin renames the workspace');
+  perform tests.throws('update public.workspace_settings set logo_url = ''javascript:alert(1)'' where id',
+                       'workspace logo must be an image URL');
+  perform tests.throws('insert into public.workspace_settings (id) values (false)', 'a second workspace row');
+  perform tests.throws('delete from public.workspace_settings', 'admin deletes the workspace row');
+
+  -- The wizard's first client: Admins create client orgs with a logo; leads cannot.
+  insert into public.organizations (name, type, logo_url) values ('Wizard Client', 'client', '/clients/wizard.svg')
+  returning id into v_org;
+  perform tests.ok(v_org is not null, 'admin creates a client org');
+  perform tests.as_user('lead');
+  perform tests.throws('insert into public.organizations (name, type) values (''Lead Client'', ''client'')',
+                       'lead creates a client org');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('organizations', format('id = %L', v_org)), 0, 'client sees a new org with no shared project');
+
+  -- Invites: Admin only, Konnector roles only, lower-case unique emails, invited_by is the caller.
+  perform tests.as_user('admin');
+  insert into public.invites (email, role) values ('new.dev@konnectortech.com', 'team_member');
+  perform tests.eq(tests.count('invites'), 1, 'admin records a pending invite');
+  perform tests.throws('insert into public.invites (email, role) values (''new.dev@konnectortech.com'', ''associate'')',
+                       'duplicate invite');
+  perform tests.throws('insert into public.invites (email, role) values (''Upper@konnectortech.com'', ''team_member'')',
+                       'invite email not lower-case');
+  perform tests.throws('insert into public.invites (email, role) values (''sponsor2@client.example'', ''client_sponsor'')',
+                       'invite with a client role');
+  perform tests.throws(format('insert into public.invites (email, invited_by) values (''x@konnectortech.com'', %L)',
+                              tests.uid('lead')), 'invite forged as someone else');
+  perform tests.as_user('lead');
+  perform tests.eq(tests.count('invites'), 0, 'lead cannot see invites');
+  perform tests.throws('insert into public.invites (email) values (''lead.invite@konnectortech.com'')',
+                       'lead records an invite');
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('invites'), 0, 'client cannot see invites');
+
+  -- Portal isolation: Riverbend sees no Peachtree project, item, deliverable, gate review or report.
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('projects', format('id in (%L, %L)', tests.ehr(), tests.psr())), 0,
+                   'riverbend sees no Peachtree project');
+  perform tests.eq(tests.count('work_items', format('project_id in (%L, %L)', tests.ehr(), tests.psr())), 0,
+                   'riverbend sees no Peachtree work');
+  perform tests.eq(tests.count('deliverables', format('project_id = %L', tests.ehr())), 0,
+                   'riverbend sees no Peachtree deliverable');
+  perform tests.eq(tests.count('gate_reviews', format('project_id = %L', tests.ehr())), 0,
+                   'riverbend sees no Peachtree gate review');
+  perform tests.eq(tests.count('status_reports', format('project_id = %L', tests.ehr())), 0,
+                   'riverbend sees no Peachtree status report');
+  perform tests.eq(tests.count('organizations', 'name = ''Peachtree Clinic Group'''), 0,
+                   'riverbend sees no Peachtree org (logo included)');
+  perform tests.throws(format('select public.create_client_request(%L, %L)', tests.ehr(), 'Cross-org request'),
+                       'riverbend files a request into a Peachtree project');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 19. Ledger: time tracking lifecycle, approved time as actual cost, permission-change audit
+--     (0012_ledger.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_id uuid;
+  v_other uuid;
+  v_ac0 bigint;
+begin
+  -- Only internal people log time; associates only on assigned projects; quarter hours only.
+  perform tests.as_user('assoc');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.rvb(), tests.item('RVB-2'), tests.uid('assoc')), 'associate logs on an unassigned project');
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('sponsor')), 'client logs time');
+  perform tests.as_user('lead');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('sponsor')), 'lead logs time for a client user');
+  v_ac0 := public.project_actual_cost(tests.ehr(), '2027-01-31');
+
+  perform tests.as_user('dev');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 0.3)',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('dev')), 'non-quarter hours');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.ehr(), tests.item('RVB-3'), tests.uid('dev')), 'item from another project');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours, status) values (%L, %L, %L, ''2027-01-13'', 1, ''approved'')',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('dev')), 'insert pre-approved time');
+  insert into public.time_entries (project_id, item_id, user_id, entry_date, hours, note)
+  values (tests.ehr(), tests.item('EHR-7'), tests.uid('dev'), '2027-01-13', 2.5, 'Dry-run') returning id into v_id;
+  perform tests.ok((select status = 'draft' from public.time_entries where id = v_id), 'new time is a draft');
+  perform tests.ok(public.item_logged_hours(tests.item('EHR-7')) >= 2.5, 'item total includes the new entry');
+  perform tests.throws('select public.project_actual_cost(tests.ehr(), ''2027-01-31'')', 'team member reads actual cost');
+  -- The owner cannot approve their own time.
+  perform tests.throws(format('update public.time_entries set status = ''approved'' where id = %L', v_id), 'owner approves own time');
+  update public.time_entries set status = 'submitted' where id = v_id;
+  perform tests.ok((select submitted_at is not null from public.time_entries where id = v_id), 'submitted_at set');
+  perform tests.throws(format('update public.time_entries set hours = 3 where id = %L', v_id), 'owner edits submitted time');
+  perform tests.throws(format('delete from public.time_entries where id = %L', v_id), 'owner deletes submitted time');
+
+  -- Other team members never see someone else's time; clients see none and get no item totals.
+  perform tests.as_user('team');
+  perform tests.eq(tests.count('time_entries', format('id = %L', v_id)), 0, 'team member sees a colleague''s time');
+  perform tests.ok(public.item_logged_hours(tests.item('EHR-7')) >= 2.5, 'team member sees the item total');
+  update public.time_entries set status = 'approved' where id = v_id;  -- invisible row: no effect
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.item_logged_hours(%L)', tests.item('EHR-7')), 'client reads logged hours');
+  perform tests.eq(tests.count('time_entries'), 0, 'client sees time entries');
+
+  -- The Lead rejects with a reason; the owner edits (back to draft) and resubmits; the Lead approves.
+  perform tests.as_user('lead');
+  perform tests.ok((select status = 'submitted' from public.time_entries where id = v_id), 'team member could not approve');
+  perform tests.throws(format('update public.time_entries set status = ''rejected'' where id = %L', v_id), 'reject without a reason');
+  update public.time_entries set status = 'rejected', reject_reason = 'Split by ticket' where id = v_id;
+  perform tests.ok((select decided_by = tests.uid('lead') from public.time_entries where id = v_id), 'decided_by is the lead');
+  perform tests.as_user('dev');
+  update public.time_entries set hours = 2.5, note = 'Dry-run (EHR-7 only)' where id = v_id;
+  perform tests.ok((select status = 'draft' from public.time_entries where id = v_id), 'editing rejected time makes a draft');
+  update public.time_entries set status = 'submitted' where id = v_id;
+  perform tests.as_user('lead');
+  update public.time_entries set status = 'approved' where id = v_id;
+  perform tests.eq(public.project_actual_cost(tests.ehr(), '2027-01-31') - v_ac0, 23750,
+                   'approved 2.5 h x $95 adds $237.50 to actual cost');
+  perform tests.eq(public.project_actual_cost(tests.ehr(), '2027-01-12') - v_ac0, 0, 'cost counts from the entry date');
+  perform tests.eq(tests.count('profile_rates'), 0, 'lead still cannot read cost rates');
+
+  -- Approved time is locked for everyone, even the table owner.
+  perform tests.throws(format('update public.time_entries set hours = 1 where id = %L', v_id), 'lead edits approved time');
+  perform tests.throws(format('update public.time_entries set status = ''rejected'', reject_reason = ''x'' where id = %L', v_id),
+                       'lead rejects approved time');
+  perform tests.as_user('dev');
+  perform tests.throws(format('delete from public.time_entries where id = %L', v_id), 'owner deletes approved time');
+  perform tests.as_owner();
+  perform tests.throws(format('delete from public.time_entries where id = %L', v_id), 'table owner deletes approved time');
+
+  -- Decisions are audited in the database.
+  perform tests.eq(tests.count('audit_log', format('entity = ''time_entry'' and entity_id = %L and action = ''time.reject''', v_id)), 1,
+                   'rejection audited');
+  perform tests.eq(tests.count('audit_log', format('entity = ''time_entry'' and entity_id = %L and action = ''time.approve'' and actor_id = %L',
+                                                   v_id, tests.uid('lead'))), 1, 'approval audited');
+
+  -- A Lead cannot approve time on a project they don't lead (PSR is led by the Admin).
+  perform tests.as_user('team');
+  insert into public.time_entries (project_id, item_id, user_id, entry_date, hours)
+  values (tests.psr(), tests.item('PSR-1'), tests.uid('team'), '2027-01-13', 1) returning id into v_other;
+  update public.time_entries set status = 'submitted' where id = v_other;
+  perform tests.as_user('lead');
+  perform tests.eq(tests.count('time_entries', format('id = %L', v_other)), 0, 'lead sees time on a project they don''t lead');
+  perform tests.as_user('admin');
+  update public.time_entries set status = 'approved' where id = v_other;
+  perform tests.ok((select status = 'approved' from public.time_entries where id = v_other), 'admin approves any project');
+
+  -- Permission changes are audited: role changes and project membership.
+  perform tests.as_user('admin');
+  update public.profiles set role = 'delivery_lead' where id = tests.uid('team');
+  perform tests.eq(tests.count('audit_log', format('action = ''permission.role_change'' and entity_id = %L and after->>''role'' = ''delivery_lead''',
+                                                   tests.uid('team'))), 1, 'role change audited');
+  perform tests.as_user('lead');
+  insert into public.project_members (project_id, user_id, project_role) values (tests.rvb(), tests.uid('team'), 'QA');
+  update public.project_members set project_role = 'QA lead' where project_id = tests.rvb() and user_id = tests.uid('team');
+  delete from public.project_members where project_id = tests.rvb() and user_id = tests.uid('team');
+  perform tests.as_user('admin');
+  perform tests.eq(tests.count('audit_log', format('entity = ''project_member'' and entity_id = %L and project_id = %L and actor_id = %L',
+                                                   tests.uid('team'), tests.rvb(), tests.uid('lead'))), 3,
+                   'member add / change / remove audited');
 end $$;
 rollback;
 

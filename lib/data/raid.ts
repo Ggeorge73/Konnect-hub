@@ -16,11 +16,7 @@ import { ForbiddenError, NotFoundError, ValidationError } from './errors';
 import { checkShape } from './raid-rules';
 import { isPostgresEnabled } from './index';
 import { postgresRaidStore } from './raid-postgres';
-import {
-  notify,
-  listNotifications as notifyListNotifications,
-  markNotificationsRead as notifyMarkNotificationsRead,
-} from './notify';
+import { memorySignalStore, notify } from './notify';
 
 /**
  * RAID register and notifications. `RaidStore` has two implementations, picked like getRepo():
@@ -273,8 +269,8 @@ export const memoryRaidStore: RaidStore = {
   updateRaid: memUpdateRaid,
   escalateStaleIssues: memEscalateStaleIssues,
   // The notification center lives in lib/data/notify.ts (Team Signal); the demo store delegates to it.
-  listNotifications: (s) => notifyListNotifications(s),
-  markNotificationsRead: (s, ids, now) => notifyMarkNotificationsRead(s, ids, now),
+  listNotifications: (s) => memorySignalStore.listNotifications(s),
+  markNotificationsRead: (s, ids, now) => memorySignalStore.markNotificationsRead(s, ids, now),
 };
 
 /** The active RAID store: Postgres + RLS when getRepo() would pick Postgres, else the demo store. */

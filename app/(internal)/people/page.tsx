@@ -1,11 +1,5 @@
-import { ComingSoon } from '@/components/ui/ComingSoon';
+import { PeopleDirectory } from '@/features/capacity/PeopleDirectory';
 export const metadata = { title: 'People' };
 export default function Page() {
-  return (
-    <ComingSoon
-      title="People"
-      sprint="PI-1 Sprint 4"
-      body="People directory, skills, certifications and the allocation grid."
-    />
-  );
+  return <PeopleDirectory />;
 }
