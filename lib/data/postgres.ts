@@ -25,6 +25,7 @@ import {
 import { STATUS_LABEL } from '../domain/workflow';
 import { GATE_NAMES } from '../domain/templates';
 import { DEMO_PROJECT_KEY } from './seed';
+import { pgOnCommentAdded, pgOnItemCreated, pgOnItemUpdated } from './notify-postgres';
 
 /**
  * Postgres-backed Repo (porsager/postgres). Every call runs in its own transaction as the
@@ -49,6 +50,12 @@ export const uuidOrNull = (v: string | null | undefined) => (v == null || v === 
 /** Postgres text[] literal. Passed as a string param so it never depends on fetched array types. */
 export const textArray = (xs: readonly string[]) =>
   `{${xs.map((x) => `"${x.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(',')}}`;
+
+/**
+ * A jsonb parameter. postgres.js serializes parameters the server describes as json/jsonb with
+ * JSON.stringify itself, so passing a pre-stringified value would store a JSON *string*.
+ */
+export const jsonb = (tx: Sql | Tx, v: unknown) => tx.json(v as postgres.JSONValue);
 
 const likeEscape = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 export const num = (v: unknown) => (v == null ? null : Number(v));
@@ -144,6 +151,40 @@ export interface AsUserOptions {
   claims?: Record<string, string>;
 }
 
+/** Side effects (emails, real-time events) registered by a transaction, run once it commits. */
+const commitHooks = new WeakMap<object, (() => void)[]>();
+
+/**
+ * Runs `fn` after the current transaction commits (immediately if `tx` is not one of ours).
+ * Used for effects that must not happen for a rolled-back write, such as emails.
+ */
+export function afterCommit(tx: Tx, fn: () => void) {
+  const hooks = commitHooks.get(tx);
+  if (hooks) hooks.push(fn);
+  else fn();
+}
+
+async function inTransaction<T>(sql: Sql, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  const hooks: (() => void)[] = [];
+  let out: T;
+  try {
+    out = (await sql.begin(async (tx) => {
+      commitHooks.set(tx, hooks);
+      return fn(tx);
+    })) as T;
+  } catch (e) {
+    throw mapPgError(e);
+  }
+  for (const h of hooks) {
+    try {
+      h();
+    } catch {
+      // A failed side effect (e.g. an email) never undoes a committed write.
+    }
+  }
+  return out;
+}
+
 /** Runs fn in a transaction as the session user, with RLS applied. */
 export async function asUser<T>(
   sql: Sql,
@@ -151,18 +192,14 @@ export async function asUser<T>(
   fn: (tx: Tx) => Promise<T>,
   opts: AsUserOptions = {},
 ): Promise<T> {
-  try {
-    return (await sql.begin(async (tx) => {
-      if (opts.privileged) await opts.privileged(tx);
-      await tx`set local role authenticated`;
-      const claims = JSON.stringify({ ...opts.claims, sub: userId, role: 'authenticated' });
-      await tx`select set_config('request.jwt.claim.sub', ${userId}, true),
-                      set_config('request.jwt.claims', ${claims}, true)`;
-      return fn(tx);
-    })) as T;
-  } catch (e) {
-    throw mapPgError(e);
-  }
+  return inTransaction(sql, async (tx) => {
+    if (opts.privileged) await opts.privileged(tx);
+    await tx`set local role authenticated`;
+    const claims = JSON.stringify({ ...opts.claims, sub: userId, role: 'authenticated' });
+    await tx`select set_config('request.jwt.claim.sub', ${userId}, true),
+                    set_config('request.jwt.claims', ${claims}, true)`;
+    return fn(tx);
+  });
 }
 
 /**
@@ -170,16 +207,28 @@ export async function asUser<T>(
  * `service_role`, which Supabase grants BYPASSRLS. Never used for a user request.
  */
 export async function asService<T>(sql: Sql, fn: (tx: Tx) => Promise<T>): Promise<T> {
-  try {
-    return (await sql.begin(async (tx) => {
-      await tx`set local role service_role`;
-      await tx`select set_config('request.jwt.claim.sub', '', true),
-                      set_config('request.jwt.claims', '{"role":"service_role"}', true)`;
-      return fn(tx);
-    })) as T;
-  } catch (e) {
-    throw mapPgError(e);
-  }
+  return inTransaction(sql, async (tx) => {
+    await tx`set local role service_role`;
+    await tx`select set_config('request.jwt.claim.sub', '', true),
+                    set_config('request.jwt.claims', '{"role":"service_role"}', true)`;
+    return fn(tx);
+  });
+}
+
+/**
+ * Inside an asUser transaction: runs `fn` as `service_role` (BYPASSRLS), then switches back to
+ * `authenticated`. Only for server-decided steps that RLS cannot express for the caller, each
+ * with its own explicit rule: the notification dispatcher (recipients are other users, checked
+ * with user_can_see_project and mayNotify), auto-watching, and the server-only EVM inputs. Never
+ * runs user-supplied SQL. If `fn` throws, the whole transaction is rolled back anyway.
+ */
+export async function inServiceScope<T>(tx: Tx, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  const [{ role }] = await tx`select current_user::text as role`;
+  if (role === 'service_role') return fn(tx); // already the system job (asService)
+  await tx`set local role service_role`;
+  const out = await fn(tx);
+  await tx`set local role authenticated`;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,8 +443,8 @@ export async function audit(
   await tx`
     insert into public.audit_log (actor_id, project_id, action, entity, entity_id, before, after)
     values (${s.user.id}, ${projectId}, ${action}, ${entity}, ${entityId},
-            ${before === undefined ? null : JSON.stringify(before)}::jsonb,
-            ${after === undefined ? null : JSON.stringify(after)}::jsonb)`;
+            ${before === undefined ? null : jsonb(tx, before)}::jsonb,
+            ${after === undefined ? null : jsonb(tx, after)}::jsonb)`;
 }
 
 function filterSql(tx: Tx, f: ItemFilters) {
@@ -525,7 +574,9 @@ export function createPostgresRepo(sql: Sql): Repo {
         item.visibility,
         fields.visibility,
       );
-    return findItem(tx, item.id);
+    const after = await findItem(tx, item.id);
+    await pgOnItemUpdated(tx, s, await findProject(tx, item.projectId), item, after);
+    return after;
   }
 
   /**
@@ -762,7 +813,9 @@ export function createPostgresRepo(sql: Sql): Repo {
           const [row] = await tx`
             select id from public.create_client_request(${project.id}::uuid, ${input.title.trim()}::text,
               ${input.description ?? ''}::text, ${input.priority ?? 'medium'}::public.priority)`;
-          return findItem(tx, row.id);
+          const request = await findItem(tx, row.id);
+          await pgOnItemCreated(tx, s, project, request);
+          return request;
         }
         const [row] = await tx`
           insert into public.work_items (project_id, type, title, description, status, priority,
@@ -776,7 +829,9 @@ export function createPostgresRepo(sql: Sql): Repo {
             (select coalesce(max(position), 0) + 1000 from public.work_items where project_id = ${project.id}))
           returning id, key, visibility`;
         await logActivity(tx, s, project.id, 'item.created', `${row.key} created`, row.visibility, row.id);
-        return findItem(tx, row.id);
+        const item = await findItem(tx, row.id);
+        await pgOnItemCreated(tx, s, project, item);
+        return item;
       });
       return auditRestricted(s, work, undefined, input.projectId);
     },
@@ -821,7 +876,9 @@ export function createPostgresRepo(sql: Sql): Repo {
           vis === 'shared' && item.visibility === 'shared' ? 'shared' : 'internal',
           item.id,
         );
-        return toComment(row);
+        const comment = toComment(row);
+        await pgOnCommentAdded(tx, s, await findProject(tx, item.projectId), item, comment);
+        return comment;
       });
     },
 

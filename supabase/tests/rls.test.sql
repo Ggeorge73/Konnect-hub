@@ -1158,5 +1158,85 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 20. Shield: Postgres data path for the Sprint 3 domains (0013_shield_sprint3_postgres.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_j jsonb;
+  who text;
+begin
+  -- Server-only helpers: signed-in users and anon cannot execute them.
+  foreach who in array array['anon', 'authenticated'] loop
+    perform tests.ok(not has_function_privilege(who, 'public.user_can_see_project(uuid, uuid)', 'execute'),
+                     who || ' cannot execute user_can_see_project');
+    perform tests.ok(not has_function_privilege(who, 'public.project_evm_inputs(uuid)', 'execute'),
+                     who || ' cannot execute project_evm_inputs');
+  end loop;
+  perform tests.ok(has_function_privilege('service_role', 'public.project_evm_inputs(uuid)', 'execute'),
+                   'service_role executes project_evm_inputs');
+  perform tests.as_user('dev');
+  perform tests.throws(format('select public.project_evm_inputs(%L)', tests.ehr()), 'team member reads EVM inputs');
+  perform tests.throws(format('select public.user_can_see_project(%L, %L)', tests.uid('rsponsor'), tests.ehr()),
+                       'signed-in user probes project access of another user');
+
+  -- user_can_see_project mirrors canSeeProject for any user.
+  perform tests.as_owner();
+  perform tests.ok(public.user_can_see_project(tests.uid('lead'), tests.ehr()), 'lead sees EHR');
+  perform tests.ok(public.user_can_see_project(tests.uid('sponsor'), tests.ehr()), 'sponsor sees own org project');
+  perform tests.ok(not public.user_can_see_project(tests.uid('rsponsor'), tests.ehr()), 'other org never sees EHR');
+  perform tests.ok(not public.user_can_see_project(tests.uid('assoc'), tests.rvb()), 'associate does not see RVB');
+  perform tests.ok(public.user_can_see_project(tests.uid('admin'), tests.rvb()), 'admin sees every project');
+  perform tests.ok(not public.user_can_see_project(gen_random_uuid(), tests.ehr()), 'unknown user sees nothing');
+
+  -- EVM inputs: BAC in cents, actual cost = hours x cost rate, EV baseline from weighted deliverables.
+  v_j := public.project_evm_inputs(tests.ehr());
+  perform tests.eq((v_j ->> 'bac_cents')::bigint, 48000000, 'EHR BAC in cents');
+  perform tests.eq((select sum((a ->> 'amount_cents')::bigint)::bigint from jsonb_array_elements(v_j -> 'actuals') a),
+                   (select round(sum(t.hours * r.cost_rate) * 100)::bigint from public.time_entries t
+                    join public.profile_rates r on r.profile_id = t.user_id where t.project_id = tests.ehr()),
+                   'actual cost is time x cost rate');
+  perform tests.eq(jsonb_array_length(v_j -> 'milestones'), 0, 'no EV milestones without weights');
+  update public.deliverables set ev_weight = 2 where project_id = tests.ehr();
+  v_j := public.project_evm_inputs(tests.ehr());
+  perform tests.eq(jsonb_array_length(v_j -> 'milestones'), 1, 'weighted deliverable becomes an EV milestone');
+  perform tests.eq((v_j -> 'milestones' -> 0 ->> 'percent_complete')::int, 0, 'not accepted: 0% complete');
+
+  -- The project Lead reads the dashboard audit trail of a project they manage (not other audit rows).
+  perform tests.as_user('lead');
+  perform set_config('kh.client_ip', '203.0.113.7', true);
+  update public.projects set rag = 'amber', rag_reason = 'Vendor slipped' where id = tests.ehr();
+  perform set_config('kh.client_ip', 'not-an-ip', true);
+  update public.projects set share_budget = true where id = tests.ehr();
+  perform tests.eq(tests.count('audit_log', format('entity_id = %L and action = ''project.rag_override''', tests.ehr())), 1,
+                   'lead reads the RAG audit of their project');
+  perform tests.eq(tests.count('audit_log', format('entity_id = %L and action = ''dashboard.share_budget''', tests.ehr())), 1,
+                   'lead reads the budget-sharing audit');
+  perform tests.eq(tests.count('audit_log', 'action = ''project.create'''), 0, 'lead reads no other audit rows');
+  insert into public.audit_log (actor_id, project_id, action, entity, entity_id)
+  values (tests.uid('lead'), tests.ehr(), 'dashboard.export_pdf', 'project', tests.ehr()::text);
+  perform tests.eq(tests.count('audit_log', format('entity_id = %L and action = ''dashboard.export_pdf''', tests.ehr())), 1,
+                   'lead reads the PDF export audit');
+  foreach who in array array['team', 'dev', 'assoc', 'sponsor', 'rsponsor'] loop
+    perform tests.as_user(who);
+    perform tests.eq(tests.count('audit_log'), 0, who || ' reads no dashboard audit');
+  end loop;
+  perform tests.as_owner();
+  perform tests.ok((select ip = '203.0.113.7'::inet from public.audit_log where action = 'project.rag_override'
+                    and entity_id = tests.ehr()::text), 'RAG override audit records the client IP');
+  perform tests.ok((select ip is null from public.audit_log where action = 'dashboard.share_budget'
+                    and entity_id = tests.ehr()::text), 'an invalid IP is dropped, not an error');
+
+  -- The internal RAG reason of a report lives in the internal working copy.
+  perform tests.as_user('lead');
+  update public.status_report_drafts set rag_reason = 'Internal: vendor dispute' where report_id = md5('sr_ehr_1')::uuid;
+  perform tests.eq(tests.count('status_report_drafts', 'rag_reason is not null'), 1, 'lead reads internal RAG reason');
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('status_report_drafts'), 0, 'sponsor reads no working copy');
+  perform tests.eq(tests.count('status_reports', 'rag_reason like ''Internal%'''), 0, 'client copy keeps its reason');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;

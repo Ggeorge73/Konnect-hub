@@ -41,8 +41,8 @@ describe('Pulse seed', () => {
 });
 
 describe('agile metrics on the demo project', () => {
-  it('velocity covers six sprints with believable numbers and the active sprint burns down', () => {
-    const m = getProjectMetrics(as('u_lead'), 'EHR', NOW);
+  it('velocity covers six sprints with believable numbers and the active sprint burns down', async () => {
+    const m = await getProjectMetrics(as('u_lead'), 'EHR', NOW);
     expect(m.velocity).toHaveLength(6);
     expect(m.velocity.map((v) => [v.committed, v.completed])).toEqual([
       [15, 10],
@@ -63,21 +63,21 @@ describe('agile metrics on the demo project', () => {
   });
 
   it('moving an item to Done records history and adds to this week’s throughput', async () => {
-    const before = getProjectMetrics(as('u_dev'), 'EHR').throughput.at(-1)!.count;
+    const before = (await getProjectMetrics(as('u_dev'), 'EHR')).throughput.at(-1)!.count;
     await memoryRepo.updateItem(as('u_dev'), 'EHR-7', { status: 'done' });
     const h = db().statusHistory.at(-1)!;
     expect(h).toMatchObject({ itemId: 'wi_ehr_7', from: 'in_progress', to: 'done', actorId: 'u_dev' });
-    expect(getProjectMetrics(as('u_dev'), 'EHR').throughput.at(-1)!.count).toBe(before + 1);
+    expect((await getProjectMetrics(as('u_dev'), 'EHR')).throughput.at(-1)!.count).toBe(before + 1);
     // A non-status edit records nothing.
     const n = db().statusHistory.length;
     await memoryRepo.updateItem(as('u_dev'), 'EHR-7', { title: 'Renamed' });
     expect(db().statusHistory).toHaveLength(n);
   });
 
-  it('is internal only and respects project visibility', () => {
-    expect(() => getProjectMetrics(as('u_sponsor'), 'EHR')).toThrow(/internal/);
-    expect(() => getProjectMetrics(as('u_rsponsor'), 'EHR')).toThrow(/not found/);
-    expect(() => getProjectMetrics(as('u_assoc'), 'RVB')).toThrow(/not found/);
+  it('is internal only and respects project visibility', async () => {
+    await expect(getProjectMetrics(as('u_sponsor'), 'EHR')).rejects.toThrow(/internal/);
+    await expect(getProjectMetrics(as('u_rsponsor'), 'EHR')).rejects.toThrow(/not found/);
+    await expect(getProjectMetrics(as('u_assoc'), 'RVB')).rejects.toThrow(/not found/);
   });
 });
 

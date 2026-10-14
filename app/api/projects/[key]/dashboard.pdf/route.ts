@@ -13,7 +13,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ key: str
     const session = await getSession();
     const view = await getDashboard(session, (await params).key);
     const bytes = await renderDashboardPdf(view, session.user.name);
-    recordDashboardExport(
+    await recordDashboardExport(
       session,
       view.projectId,
       view.evmAccess,
