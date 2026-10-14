@@ -49,6 +49,7 @@ import { ItemTime } from '@/features/ledger/ItemTime';
 import { useRealtime } from '@/features/realtime/useRealtime';
 import { PresenceAvatars } from '@/features/realtime/PresenceAvatars';
 import { WatchButton } from '@/features/notifications/WatchButton';
+import { ThreadSummary } from '@/features/ai/ThreadSummary';
 
 export function ItemPanel({ projectId }: { projectId: string }) {
   const params = useSearchParams();
@@ -335,6 +336,9 @@ function ItemDetailView({
           <Tab value="links" label={`Links (${data.links.length})`} />
         </Tabs>
         <Divider />
+        {tab === 'comments' && (
+          <ThreadSummary itemKey={item.key} projectKey={projectId} commentCount={data.comments.length} />
+        )}
         {tab === 'comments' && (
           <Comments
             itemKey={item.key}

@@ -27,6 +27,8 @@ import { clearOutbox, outbox } from '../email/send';
 import { runLedgerContract } from './contract-ledger';
 import { createPostgresLedgerStore } from './ledger-postgres';
 import { createPostgresAuditStore } from './audit-postgres';
+import { runAiContract } from './contract-ai';
+import { createPostgresAiStore } from './ai-postgres';
 
 /**
  * Runs the Repo contract against Postgres + RLS. Skipped unless TEST_DATABASE_URL points at a
@@ -110,6 +112,16 @@ describe.skipIf(!url)('postgres repo (TEST_DATABASE_URL)', () => {
     () => ({
       repo: createPostgresRepo(sql!),
       ledger: createPostgresLedgerStore(sql!),
+      audit: createPostgresAuditStore(sql!),
+    }),
+    sessionFor,
+    reset,
+  );
+  runAiContract(
+    'postgres',
+    () => ({
+      repo: createPostgresRepo(sql!),
+      ai: createPostgresAiStore(sql!),
       audit: createPostgresAuditStore(sql!),
     }),
     sessionFor,

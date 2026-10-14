@@ -1426,5 +1426,77 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 21. AI: per-project AI switch (off by default, Lead / Admin only, audited by trigger) and
+--     risk-suggestion decisions (internal only, append-only) (0014_ai_assist.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_audit0 bigint;
+begin
+  -- Everyone who can see the project reads the switch; other clients see nothing.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('ai_settings', format('project_id = %L and enabled', tests.ehr())), 1, 'sponsor reads the EHR switch');
+  perform tests.eq(tests.count('ai_settings', format('project_id = %L', tests.rvb())), 0, 'sponsor reads the Riverbend switch');
+  perform tests.eq(tests.count('ai_suggestion_decisions'), 0, 'clients never read suggestion decisions');
+  perform tests.throws(format('insert into public.ai_settings (project_id, enabled) values (%L, true)', tests.psr()),
+                       'sponsor turns AI on');
+  update public.ai_settings set enabled = false where project_id = tests.ehr();
+  perform tests.as_owner();
+  perform tests.ok((select enabled from public.ai_settings where project_id = tests.ehr()), 'sponsor update had no effect');
+
+  -- A team member cannot toggle, even on a project they work on.
+  perform tests.as_user('team');
+  perform tests.eq(tests.count('ai_settings', format('project_id = %L', tests.ehr())), 1, 'team member reads the EHR switch');
+  update public.ai_settings set enabled = false where project_id = tests.ehr();
+  perform tests.throws(format('insert into public.ai_settings (project_id, enabled) values (%L, true)', tests.psr()),
+                       'team member turns AI on');
+  perform tests.as_owner();
+  perform tests.ok((select enabled from public.ai_settings where project_id = tests.ehr()), 'team member update had no effect');
+
+  -- A Lead toggles only projects they lead (PSR is led by the Admin); the Admin toggles any.
+  perform tests.as_user('lead');
+  perform tests.throws(format('insert into public.ai_settings (project_id, enabled) values (%L, true)', tests.psr()),
+                       'lead turns AI on for a project they do not lead');
+  perform tests.as_owner();
+  v_audit0 := tests.count('audit_log', 'action = ''ai.settings.update''');
+  perform tests.as_user('lead');
+  update public.ai_settings set enabled = false, updated_by = tests.uid('admin') where project_id = tests.ehr();
+  perform tests.ok((select not enabled and updated_by = tests.uid('lead') from public.ai_settings where project_id = tests.ehr()),
+                   'lead turns EHR off; who is stamped from the session');
+  update public.ai_settings set enabled = false where project_id = tests.ehr(); -- no change: no audit
+  perform tests.as_user('admin');
+  insert into public.ai_settings (project_id, enabled) values (tests.psr(), true);
+  perform tests.eq(tests.count('audit_log', 'action = ''ai.settings.update''') - v_audit0, 2, 'two changes, two audit entries');
+  perform tests.eq(tests.count('audit_log', format('action = ''ai.settings.update'' and project_id = %L and actor_id = %L and after->>''aiEnabled'' = ''false''',
+                                                   tests.ehr(), tests.uid('lead'))), 1, 'lead''s change audited');
+  perform tests.eq(tests.count('audit_log', format('action = ''ai.settings.update'' and project_id = %L and actor_id = %L and after->>''aiEnabled'' = ''true''',
+                                                   tests.psr(), tests.uid('admin'))), 1, 'admin''s change audited');
+
+  -- Decisions: internal users on visible projects only, attributed to themselves, valid keys only.
+  perform tests.as_user('dev');
+  insert into public.ai_suggestion_decisions (project_id, signal_key, decision)
+  values (tests.ehr(), 'stalled:' || tests.item('EHR-7'), 'dismissed');
+  perform tests.ok((select decided_by = tests.uid('dev') from public.ai_suggestion_decisions
+                    where project_id = tests.ehr() and signal_key = 'stalled:' || tests.item('EHR-7')), 'decided_by defaults to the user');
+  perform tests.throws(format('insert into public.ai_suggestion_decisions (project_id, signal_key, decision) values (%L, %L, ''dismissed'')',
+                              tests.ehr(), 'stalled:' || tests.item('EHR-7')), 'same signal twice');
+  perform tests.throws(format('insert into public.ai_suggestion_decisions (project_id, signal_key, decision) values (%L, ''x; drop table y'', ''dismissed'')',
+                              tests.ehr()), 'malformed signal key');
+  perform tests.throws(format('insert into public.ai_suggestion_decisions (project_id, signal_key, decision, decided_by) values (%L, ''overdue:abc'', ''dismissed'', %L)',
+                              tests.ehr(), tests.uid('lead')), 'decision attributed to someone else');
+  perform tests.throws(format('update public.ai_suggestion_decisions set decision = ''accepted'' where project_id = %L', tests.ehr()),
+                       'decisions cannot be edited');
+  perform tests.as_user('assoc');
+  perform tests.eq(tests.count('ai_suggestion_decisions', format('project_id = %L', tests.rvb())), 0, 'associate sees unassigned project decisions');
+  perform tests.throws(format('insert into public.ai_suggestion_decisions (project_id, signal_key, decision) values (%L, ''overdue:abc'', ''dismissed'')',
+                              tests.rvb()), 'associate decides on an unassigned project');
+  perform tests.as_user('cmember');
+  perform tests.throws(format('insert into public.ai_suggestion_decisions (project_id, signal_key, decision) values (%L, ''overdue:abc'', ''dismissed'')',
+                              tests.ehr()), 'client records a decision');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;
