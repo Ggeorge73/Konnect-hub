@@ -39,6 +39,7 @@ import { EmptyState, Mono, RagChip } from '@/components/ui/bits';
 import { RAG_COLORS } from '@/lib/theme';
 import { usePortfolio } from './api';
 import { ChartTable } from './ChartTable';
+import { ExportMenu } from '@/features/exports/ExportMenu';
 import { chartColors } from './BudgetBurnChart';
 
 function MiniBar({
@@ -162,6 +163,7 @@ export function PortfolioDashboard() {
           'RAG',
           (['green', 'amber', 'red'] as Rag[]).map((r) => ({ id: r, name: RAG_TEXT[r] })),
         )}
+        <ExportMenu entity="portfolio" params={{ ...f }} />
       </Stack>
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, md: 6 }}>

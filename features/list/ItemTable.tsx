@@ -36,6 +36,7 @@ import type { ItemStatus, Priority, WorkItem } from '@/lib/domain/types';
 import { ItemKey, Mono, TypeIcon, VisibilityChip, EmptyState } from '@/components/ui/bits';
 import { useHotkeys } from '@/components/shell/useHotkeys';
 import { sortItems, groupItems, type SortKey, type GroupKey } from './tableModel';
+import { ExportMenu } from '@/features/exports/ExportMenu';
 
 const COLUMNS: { id: string; label: string }[] = [
   { id: 'type', label: 'Type' },
@@ -222,6 +223,16 @@ export function ItemTable() {
             </MenuItem>
           ))}
         </Menu>
+        <ExportMenu
+          entity="items"
+          params={{
+            project: b.project.key,
+            sort: view.sort,
+            dir: view.dir,
+            q,
+            cols: COLUMNS.filter((c) => show(c.id)).map((c) => c.id),
+          }}
+        />
         <Box sx={{ flex: 1 }} />
         <Typography variant="caption" color="text.secondary">
           j/k to move, Enter to open, x to select

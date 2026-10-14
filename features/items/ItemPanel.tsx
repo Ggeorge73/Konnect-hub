@@ -45,6 +45,7 @@ import type { ItemStatus, Visibility, WorkItem } from '@/lib/domain/types';
 import { useProjectBundle } from '@/features/projects/ProjectFrame';
 import { useHotkeys } from '@/components/shell/useHotkeys';
 import { LinkedRaid } from '@/features/raid/LinkedRaid';
+import { ItemTime } from '@/features/ledger/ItemTime';
 import { useRealtime } from '@/features/realtime/useRealtime';
 import { PresenceAvatars } from '@/features/realtime/PresenceAvatars';
 import { WatchButton } from '@/features/notifications/WatchButton';
@@ -326,6 +327,7 @@ function ItemDetailView({
         )}
 
         <LinkedRaid itemKey={item.key} />
+        {!client && <ItemTime itemKey={item.key} />}
 
         <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mt: 2.5 }}>
           <Tab value="comments" label={`Comments (${data.comments.length})`} />

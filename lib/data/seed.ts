@@ -25,6 +25,7 @@ import { seedGates } from './seed-gates';
 import { seedInsight, type InsightState } from './seed-insight';
 import { seedPulse, type PulseDb } from './seed-pulse';
 import { seedSignal } from './seed-signal';
+import { seedLedger, type LedgerState } from './seed-ledger';
 
 export interface Db extends PulseDb {
   orgs: Organization[];
@@ -46,6 +47,7 @@ export interface Db extends PulseDb {
   deliverables: Deliverable[];
   insight: InsightState;
   signal: ReturnType<typeof seedSignal>['signal'];
+  ledger: LedgerState;
 }
 
 export const DEMO_PROJECT_KEY = 'EHR';
@@ -647,5 +649,6 @@ export function buildSeed(): Db {
     ...seedInsight(),
     ...seedPulse(),
     ...seedSignal(items, comments),
+    ...seedLedger(),
   };
 }

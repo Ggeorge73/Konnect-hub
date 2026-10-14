@@ -17,6 +17,9 @@ import { createPostgresGateStore } from './gates-postgres';
 import { createPostgresDeliverableStore } from './deliverables-postgres';
 import { createPostgresAcceptanceRecordStore } from './acceptance-record-postgres';
 import { SEED_PROFILE_UUID } from './seed-ids';
+import { runLedgerContract } from './contract-ledger';
+import { createPostgresLedgerStore } from './ledger-postgres';
+import { createPostgresAuditStore } from './audit-postgres';
 
 /**
  * Runs the Repo contract against Postgres + RLS. Skipped unless TEST_DATABASE_URL points at a
@@ -87,6 +90,16 @@ describe.skipIf(!url)('postgres repo (TEST_DATABASE_URL)', () => {
       gates: createPostgresGateStore(sql!),
       deliverables: createPostgresDeliverableStore(sql!),
       acceptance: createPostgresAcceptanceRecordStore(sql!),
+    }),
+    sessionFor,
+    reset,
+  );
+  runLedgerContract(
+    'postgres',
+    () => ({
+      repo: createPostgresRepo(sql!),
+      ledger: createPostgresLedgerStore(sql!),
+      audit: createPostgresAuditStore(sql!),
     }),
     sessionFor,
     reset,

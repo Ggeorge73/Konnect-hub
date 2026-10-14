@@ -23,6 +23,7 @@ import { SharedRaid } from '@/features/raid/SharedRaid';
 import type { RaidView } from '@/lib/domain/raid';
 import { PortalReportsSection } from '@/features/reports/PortalReports';
 import type { ReportSummary } from '@/lib/data/reports';
+import { ExportMenu } from '@/features/exports/ExportMenu';
 
 export function PortalProject({
   bundle,
@@ -48,9 +49,12 @@ export function PortalProject({
         </Paper>
         {children}
         <Paper sx={{ borderRadius: 4 }}>
-          <Typography variant="h3" sx={{ p: 2 }}>
-            Shared work
-          </Typography>
+          <Stack direction="row" alignItems="center" sx={{ p: 2 }}>
+            <Typography variant="h3" sx={{ flex: 1 }}>
+              Shared work
+            </Typography>
+            {visible.length > 0 && <ExportMenu entity="items" params={{ project: bundle.project.key }} />}
+          </Stack>
           {visible.length === 0 ? (
             <EmptyState
               title="Nothing shared yet"

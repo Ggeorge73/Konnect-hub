@@ -8,6 +8,9 @@ import { memorySprintStore } from './sprints';
 import { memoryGateStore } from './gates';
 import { memoryDeliverableStore } from './deliverables';
 import { memoryAcceptanceRecordStore } from './acceptance-record';
+import { runLedgerContract } from './contract-ledger';
+import { memoryLedgerStore } from './ledger';
+import { memoryAuditStore } from './audit';
 
 const as = (id: string) => sessionFor(id);
 
@@ -23,6 +26,12 @@ runDomainContracts(
     deliverables: memoryDeliverableStore,
     acceptance: memoryAcceptanceRecordStore,
   }),
+  sessionFor,
+  resetDb,
+);
+runLedgerContract(
+  'memory',
+  () => ({ repo, ledger: memoryLedgerStore, audit: memoryAuditStore }),
   sessionFor,
   resetDb,
 );
