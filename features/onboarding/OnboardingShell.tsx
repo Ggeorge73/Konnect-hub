@@ -15,12 +15,12 @@ import DarkModeOutlined from '@mui/icons-material/DarkModeOutlined';
 import LightModeOutlined from '@mui/icons-material/LightModeOutlined';
 import { APP_NAME } from '@/lib/config';
 import { useColorMode } from '@/components/providers';
-import { createAccessibleTheme } from '@/features/portal/theme';
+import { createKonnectorTheme } from '@/lib/theme';
 
 /** Minimal frame for the setup wizard. Follows the app's theme toggle, with AA-safe light accents. */
 export function OnboardingShell({ children }: { children: React.ReactNode }) {
   const { mode, toggle } = useColorMode();
-  const theme = useMemo(() => createAccessibleTheme(mode), [mode]);
+  const theme = useMemo(() => createKonnectorTheme(mode), [mode]);
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />

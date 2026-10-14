@@ -1695,5 +1695,66 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 23. Shield: security review hardening (0016_shield_hardening.sql, KH-47 SEC-03).
+--     Self-written audit rows are server-timestamped, the "View as client" preview trail is
+--     Admin-only and append-only, and a client of one org reads nothing of another org's.
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_at timestamptz;
+  v_t text;
+begin
+  -- A user cannot backdate (or future-date) an audit entry they append for themselves.
+  perform tests.as_user('sponsor');
+  insert into public.audit_log (actor_id, action, entity, entity_id, at)
+  values (tests.uid('sponsor'), 'test.backdate', 'test', 'x', '2001-01-01T00:00:00Z');
+  insert into public.audit_log (actor_id, action, entity, entity_id, at)
+  values (tests.uid('sponsor'), 'test.future', 'test', 'y', '2099-01-01T00:00:00Z');
+  perform tests.as_user('admin');
+  select at into v_at from public.audit_log where action = 'test.backdate';
+  perform tests.ok(v_at = now(), 'backdated audit row stamped with server time');
+  select at into v_at from public.audit_log where action = 'test.future';
+  perform tests.ok(v_at = now(), 'future-dated audit row stamped with server time');
+
+  -- The owner (seed, restores) and security-definer code keep the time they pass.
+  perform tests.as_owner();
+  insert into public.audit_log (actor_id, action, entity, at)
+  values (tests.uid('admin'), 'test.owner_time', 'test', '2020-02-02T00:00:00Z');
+  perform tests.ok((select at from public.audit_log where action = 'test.owner_time') = '2020-02-02T00:00:00Z',
+                   'owner-written audit row keeps its time');
+
+  -- Preview start/stop (written by the app as the Admin) are readable by Admins only and immutable.
+  perform tests.as_user('admin');
+  insert into public.audit_log (actor_id, action, entity, entity_id, after)
+  values (tests.uid('admin'), 'preview.start', 'preview', 'peachtree', '{"role":"client_sponsor"}');
+  insert into public.audit_log (actor_id, action, entity, entity_id, before)
+  values (tests.uid('admin'), 'preview.stop', 'preview', 'peachtree', '{"role":"client_sponsor"}');
+  perform tests.eq(tests.count('audit_log', 'action like ''preview.%'''), 2, 'admin reads the preview trail');
+  perform tests.throws('update public.audit_log set after = null where action = ''preview.start''',
+                       'admin edits a preview entry');
+  perform tests.throws('delete from public.audit_log where action like ''preview.%''', 'admin deletes the preview trail');
+  foreach v_t in array array['lead', 'team', 'assoc', 'sponsor', 'cmember', 'cviewer', 'rsponsor'] loop
+    perform tests.as_user(v_t);
+    perform tests.eq(tests.count('audit_log', 'action like ''preview.%'''), 0, v_t || ' reads the preview trail');
+  end loop;
+  -- Nobody can write a preview entry in an Admin's name.
+  perform tests.as_user('lead');
+  perform tests.throws(format('insert into public.audit_log (actor_id, action, entity) values (%L, ''preview.start'', ''preview'')',
+                              tests.uid('admin')), 'lead forges a preview entry for the admin');
+
+  -- Every-route test, database side: the Riverbend sponsor gets zero Peachtree (EHR) rows from
+  -- every project-scoped table, whatever the visibility.
+  perform tests.as_user('rsponsor');
+  foreach v_t in array array['work_items', 'comments', 'phases', 'gate_criteria', 'gate_reviews', 'deliverables',
+                             'deliverable_items', 'acceptance_criteria', 'sprints', 'raid_entries', 'time_entries',
+                             'allocations', 'status_reports', 'activity', 'project_members', 'project_financials'] loop
+    perform tests.eq(tests.count(v_t, format('project_id = %L', tests.ehr())), 0, 'rsponsor reads EHR ' || v_t);
+  end loop;
+  perform tests.eq(tests.count('projects', format('id = %L', tests.ehr())), 0, 'rsponsor reads the EHR project');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;

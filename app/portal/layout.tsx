@@ -9,7 +9,13 @@ export default async function PortalLayout({ children }: { children: React.React
   if (!isClientRole(s.user.role)) redirect('/');
   const [branding, inbox] = await Promise.all([getPortalBranding(s), getApprovalInbox(s)]);
   return (
-    <PortalShell orgName={s.org.name} userName={s.user.name} branding={branding} inbox={inbox}>
+    <PortalShell
+      orgName={s.org.name}
+      userName={s.user.name}
+      branding={branding}
+      inbox={inbox}
+      preview={s.impersonation}
+    >
       {children}
     </PortalShell>
   );

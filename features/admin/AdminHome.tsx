@@ -31,6 +31,7 @@ import { api, qk } from '@/lib/client/api';
 import { Mono } from '@/components/ui/bits';
 import { ROLE_LABEL } from '@/lib/domain/permissions';
 import { workspaceDisplayName, type Invite, type WorkspaceSettings } from '@/lib/domain/onboarding';
+import { ViewAsClientCard } from './ViewAsClient';
 
 /**
  * /admin: the Admin console (ADM-01, spec 3.11) as a card grid. Every screen behind these cards is
@@ -125,6 +126,9 @@ export function AdminHome({
         </Grid>
         <Grid size={{ xs: 12, md: 6, lg: 4 }}>
           <InvitesCard invites={invites} />
+        </Grid>
+        <Grid size={{ xs: 12, md: 6, lg: 4 }}>
+          <ViewAsClientCard />
         </Grid>
       </Grid>
     </Stack>

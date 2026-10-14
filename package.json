@@ -12,7 +12,9 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:rls": "bash supabase/tests/run-rls-tests.sh",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "check:bundle-secrets": "bash scripts/check-bundle-secrets.sh",
+    "audit:prod": "npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
@@ -58,6 +60,7 @@
     "vitest": "^3.2.7"
   },
   "overrides": {
-    "uuid": "^11.1.1"
+    "uuid": "^11.1.1",
+    "postcss": "^8.5.29"
   }
 }

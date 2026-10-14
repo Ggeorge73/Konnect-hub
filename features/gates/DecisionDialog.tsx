@@ -12,6 +12,7 @@ import {
   Typography,
 } from '@mui/material';
 import VerifiedUserOutlined from '@mui/icons-material/VerifiedUserOutlined';
+import { useMe } from '@/lib/client/api';
 import { reauth, reauthStatus } from './api';
 
 export interface DecisionDialogProps {
@@ -44,6 +45,8 @@ export function DecisionDialog({
 }: DecisionDialogProps) {
   const [needsReauth, setNeedsReauth] = useState(true);
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const supabase = useMe().data?.auth === 'supabase';
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -53,6 +56,7 @@ export function DecisionDialog({
     setText('');
     setError(null);
     setEmail('');
+    setPassword('');
     reauthStatus()
       .then((r) => setNeedsReauth(!r.fresh))
       .catch(() => setNeedsReauth(true));
@@ -65,7 +69,7 @@ export function DecisionDialog({
     setError(null);
     try {
       if (needsReauth) {
-        await reauth(email);
+        await reauth(email, supabase && password ? password : undefined);
         setNeedsReauth(false);
       }
       await onConfirm(text);
@@ -135,6 +139,18 @@ export function DecisionDialog({
                 fullWidth
                 autoFocus
               />
+              {supabase && (
+                <TextField
+                  label="Password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && !field?.multiline && submit()}
+                  helperText="Signed in with a magic link or Google/Microsoft? Sign out and back in, then decide within 15 minutes."
+                  fullWidth
+                />
+              )}
             </>
           )}
           {error && <Alert severity="error">{error}</Alert>}
