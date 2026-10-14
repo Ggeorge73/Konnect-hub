@@ -19,11 +19,18 @@ import { GATE_NAMES } from '../domain/templates';
 import { recordStatusChange } from './pulse-history';
 import { onCommentAdded, onItemCreated, onItemUpdated } from './notify';
 import { restrictedRefusal, RESTRICTED_REFUSED } from '../domain/capacity';
+import { applyLoad, loadOptionsFromEnv } from '../../scripts/seed-load';
 
 const g = globalThis as unknown as { __khDb?: Db };
-export const db = (): Db => (g.__khDb ??= buildSeed());
+/** The demo seed, plus the KH-46 2×-scale load dataset when KH_LOAD=1 (perf runs only). */
+function buildDb(): Db {
+  const d = buildSeed();
+  if (process.env.KH_LOAD === '1') applyLoad(d, loadOptionsFromEnv());
+  return d;
+}
+export const db = (): Db => (g.__khDb ??= buildDb());
 export const resetDb = () => {
-  g.__khDb = buildSeed();
+  g.__khDb = buildDb();
 };
 
 const now = () => new Date().toISOString();
@@ -92,10 +99,10 @@ function checkAssignee(s: Session, project: Project, assigneeId: string | null |
   throw new ValidationError(msg);
 }
 
-function summarize(s: Session, p: Project): ProjectSummary {
+function summarize(s: Session, p: Project, projectItems?: WorkItem[]): ProjectSummary {
   const d = db();
-  const items = d.items.filter(
-    (i) => i.projectId === p.id && !i.deletedAt && canSeeVisibility(s.user, i.visibility),
+  const items = (projectItems ?? d.items.filter((i) => i.projectId === p.id)).filter(
+    (i) => !i.deletedAt && canSeeVisibility(s.user, i.visibility),
   );
   const work = items.filter((i) => i.type !== 'epic' && i.type !== 'feature');
   const done = work.filter((i) => i.status === 'done' || i.status === 'accepted').length;
@@ -161,9 +168,16 @@ export const memoryRepo: Repo = {
   },
 
   async listProjects(s) {
+    // Group items once (KH-46: 120+ projects × 20k+ items made a per-project scan quadratic).
+    const byProject = new Map<string, WorkItem[]>();
+    for (const i of db().items) {
+      const list = byProject.get(i.projectId);
+      if (list) list.push(i);
+      else byProject.set(i.projectId, [i]);
+    }
     return visibleProjects(s)
       .filter((p) => !p.deletedAt)
-      .map((p) => summarize(s, p));
+      .map((p) => summarize(s, p, byProject.get(p.id) ?? []));
   },
 
   async getProjectBundle(s, key) {
@@ -309,7 +323,7 @@ export const memoryRepo: Repo = {
       visibility: clientRequest ? 'shared' : (input.visibility ?? 'internal'),
       acceptanceCriteria: [],
       position:
-        Math.max(0, ...d.items.filter((i) => i.projectId === project.id).map((i) => i.position)) + 1000,
+        d.items.reduce((m, i) => (i.projectId === project.id ? Math.max(m, i.position) : m), 0) + 1000,
       createdAt: t,
       updatedAt: t,
     };

@@ -1426,5 +1426,60 @@ begin
 end $$;
 rollback;
 
+-- ---------------------------------------------------------------------------
+-- 22. Flow: indexed search candidates (0015_flow_search_indexes.sql). The SECURITY DEFINER
+--     functions must return exactly what the work_items / comments select policies allow:
+--     no other client's rows, no internal rows for clients, no deleted items, and nothing for anon.
+-- ---------------------------------------------------------------------------
+begin;
+do $$
+declare
+  n bigint;
+begin
+  -- Client Sponsor (Peachtree): own shared items only.
+  perform tests.as_user('sponsor');
+  perform tests.eq((select count(*) from public.search_work_item_ids('permit')), 0, 'sponsor finds Riverbend items');
+  perform tests.eq((select count(*) from public.search_work_item_ids('RVB-1')), 0, 'sponsor finds a Riverbend key');
+  perform tests.eq((select count(*) from public.search_work_item_ids('pharmacy')), 0, 'sponsor finds an internal epic');
+  select count(*) into n from public.search_work_item_ids('conversion');
+  perform tests.ok(n > 0, 'sponsor finds shared EHR items');
+  perform tests.eq((select count(*) from public.search_work_item_ids('conversion') s
+                    join public.work_items w on w.id = s.id), n, 'every candidate is readable through RLS');
+  perform tests.eq((select count(*) from public.search_work_item_ids('conversion', 50, null, null, 'internal')), 0,
+                   'sponsor filters to internal items');
+  perform tests.eq((select count(*) from public.search_comment_ids('thursday')), 0, 'sponsor finds an internal comment');
+  perform tests.eq((select count(*) from public.search_comment_ids('duplicates')), 1, 'sponsor finds a shared comment');
+
+  -- Client Sponsor (Riverbend): the mirror image.
+  perform tests.as_user('rsponsor');
+  perform tests.ok((select count(*) from public.search_work_item_ids('permit')) > 0, 'rsponsor finds own items');
+  perform tests.eq((select count(*) from public.search_work_item_ids('security')), 0, 'rsponsor finds an internal task');
+  perform tests.eq((select count(*) from public.search_work_item_ids('conversion')), 0, 'rsponsor finds Peachtree items');
+  perform tests.eq((select count(*) from public.search_comment_ids('duplicates')), 0, 'rsponsor finds Peachtree comments');
+
+  -- Internal users see internal rows on their projects; the key arm matches exactly.
+  perform tests.as_user('lead');
+  perform tests.ok((select count(*) from public.search_work_item_ids('pharmacy')) > 0, 'lead finds the internal epic');
+  perform tests.eq((select count(*) from public.search_work_item_ids('EHR-7') s where s.id = tests.item('EHR-7')), 1,
+                   'search by key');
+  perform tests.eq((select count(*) from public.search_comment_ids('thursday')), 1, 'lead finds the internal comment');
+  perform tests.eq((select count(*) from public.search_work_item_ids('conversion', 50, array['epic'], null, null)), 0,
+                   'type filter applies before the limit');
+
+  -- Soft-deleted items disappear from search for everyone.
+  update public.work_items set deleted_at = now() where id = tests.item('EHR-7');
+  perform tests.eq((select count(*) from public.search_work_item_ids('EHR-7') s where s.id = tests.item('EHR-7')), 0,
+                   'deleted item in search');
+  perform tests.eq((select count(*) from public.search_comment_ids('duplicates')), 0, 'comment on a deleted item');
+
+  -- Signed-out callers cannot call the functions at all.
+  perform tests.as_owner();
+  perform tests.ok(not has_function_privilege('anon', 'public.search_work_item_ids(text, integer, text[], text[], text)',
+                                              'execute'), 'anon cannot execute search_work_item_ids');
+  perform tests.ok(not has_function_privilege('anon', 'public.search_comment_ids(text, integer)', 'execute'),
+                   'anon cannot execute search_comment_ids');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;

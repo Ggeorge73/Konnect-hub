@@ -388,20 +388,60 @@ export function buildTimeline(input: TimelineInput, zoom: Zoom, today: string): 
   };
 }
 
-/** Screen-reader description of a bar. */
-export function barAriaLabel(bar: Bar, opts: { editable: boolean; critical?: boolean }): string {
+/** Screen-reader description of a bar. `float` (days) is announced when critical-path analysis is on. */
+export function barAriaLabel(
+  bar: Bar,
+  opts: { editable: boolean; critical?: boolean; float?: number },
+): string {
   const what = bar.kind === 'sprint' ? 'Sprint' : `Epic ${bar.key}`;
   const status = bar.status.replace(/_/g, ' ');
   const base = `${what}: ${bar.label}, ${status}, ${formatDate(bar.start)} to ${formatDate(bar.end)}`;
+  const float = opts.float === undefined ? '' : `, ${floatLabel(opts.float)}`;
   const crit = opts.critical ? ', on the critical path' : '';
   return opts.editable
-    ? `${base}${crit}. Use Left and Right arrow keys to move by one day.`
-    : `${base}${crit}.`;
+    ? `${base}${float}${crit}. Use Left and Right arrow keys to move by one day.`
+    : `${base}${float}${crit}.`;
+}
+
+export const floatLabel = (days: number) => `float ${days} ${days === 1 ? 'day' : 'days'}`;
+
+// ---------------------------------------------------------------------------
+// Critical path extension point
+// ---------------------------------------------------------------------------
+
+/** Which part of the network the critical path is computed over: the Execute phase (gate 3) or all. */
+export type CriticalScope = 'execute' | 'all';
+
+export interface CriticalPathResult {
+  /** Ids of bars on the critical path. */
+  bars: ReadonlySet<string>;
+  /** Ids of dependency arrows (link ids) that drive the critical path. */
+  arrows: ReadonlySet<string>;
+  /** Total float in days for every analysed bar. */
+  float: ReadonlyMap<string, number>;
+  /** Dependency cycles, as lists of human-readable labels (item keys). */
+  cycles: string[][];
+  /** Labels of the critical bars, in path order. */
+  chain: string[];
+  /** Early finish of the analysed network (inclusive ISO date), when there is one. */
+  finish?: string;
 }
 
 /**
- * Extension point for critical-path highlighting (added by another team in Sprint 5): a function
- * from the laid-out model and its input to the ids of bars on the critical path.
+ * Extension point for critical-path highlighting: a function from the laid-out model and its input
+ * to the bars and arrows on the critical path (see `features/timeline/critical.ts`).
  */
-export type CriticalPathFn = (model: TimelineModel, input: TimelineInput) => ReadonlySet<string>;
-export const noCriticalPath: CriticalPathFn = () => new Set();
+export type CriticalPathFn = (
+  model: TimelineModel,
+  input: TimelineInput,
+  opts: { scope: CriticalScope },
+) => CriticalPathResult;
+
+export const EMPTY_CRITICAL_PATH: CriticalPathResult = {
+  bars: new Set(),
+  arrows: new Set(),
+  float: new Map(),
+  cycles: [],
+  chain: [],
+};
+export const noCriticalPath: CriticalPathFn = () => EMPTY_CRITICAL_PATH;

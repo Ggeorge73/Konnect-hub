@@ -1,6 +1,7 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { replaceSearchParam } from '@/lib/client/url';
 import {
   Alert,
   Avatar,
@@ -53,16 +54,11 @@ import { WatchButton } from '@/features/notifications/WatchButton';
 export function ItemPanel({ projectId }: { projectId: string }) {
   const params = useSearchParams();
   const key = params.get('item');
-  const router = useRouter();
-  const pathname = usePathname();
   const theme = useTheme();
   const mobile = useMediaQuery(theme.breakpoints.down('sm'));
   useRealtime(projectId);
-  const close = () => {
-    const sp = new URLSearchParams(params.toString());
-    sp.delete('item');
-    router.replace(`${pathname}${sp.size ? '?' + sp : ''}`, { scroll: false });
-  };
+  // In place (no RSC round trip), like the board and list open it (KH-46).
+  const close = () => replaceSearchParam('item', null);
   return (
     <Drawer
       anchor="right"
@@ -91,6 +87,16 @@ function ItemDetailView({
   const update = useUpdateItem(projectId);
   const [tab, setTab] = useState<'comments' | 'activity' | 'links'>('comments');
   const [acceptOpen, setAcceptOpen] = useState(false);
+  // KH-46: paint the header, title and fields first; mount the heavier sections (editor,
+  // criteria, RAID, time, comments) in a transition right after, so the panel opens < 300 ms.
+  const [full, setFull] = useState(false);
+  useEffect(() => {
+    // Two frames: the first paints the shell, the second starts the rest.
+    let t = requestAnimationFrame(() => {
+      t = requestAnimationFrame(() => startTransition(() => setFull(true)));
+    });
+    return () => cancelAnimationFrame(t);
+  }, []);
   const titleRef = useRef<HTMLInputElement>(null);
   useHotkeys(useMemo(() => ({ e: () => titleRef.current?.focus() }), []));
 
@@ -298,96 +304,102 @@ function ItemDetailView({
           renderInput={(p) => <TextField {...p} label="Labels" placeholder="Add label" />}
           sx={{ mt: 2 }}
         />
-        <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 1 }}>
-          Description
-        </Typography>
-        <RichText
-          label="Description"
-          value={item.description}
-          editable={editable}
-          onSave={(html) => save({ description: html })}
-        />
+        {!full ? (
+          <Skeleton height={160} sx={{ mt: 2 }} aria-hidden />
+        ) : (
+          <>
+            <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 1 }}>
+              Description
+            </Typography>
+            <RichText
+              label="Description"
+              value={item.description}
+              editable={editable}
+              onSave={(html) => save({ description: html })}
+            />
 
-        <AcceptanceCriteria item={item} editable={editable} onSave={save} />
+            <AcceptanceCriteria item={item} editable={editable} onSave={save} />
 
-        {(data.parent || data.children.length > 0) && (
-          <Box sx={{ mt: 2.5 }}>
-            <Typography variant="subtitle2">Hierarchy</Typography>
-            {data.parent && (
-              <Typography variant="body2">
-                Parent: <Mono>{data.parent.key}</Mono> {data.parent.title}
-              </Typography>
+            {(data.parent || data.children.length > 0) && (
+              <Box sx={{ mt: 2.5 }}>
+                <Typography variant="subtitle2">Hierarchy</Typography>
+                {data.parent && (
+                  <Typography variant="body2">
+                    Parent: <Mono>{data.parent.key}</Mono> {data.parent.title}
+                  </Typography>
+                )}
+                {data.children.map((c) => (
+                  <Typography key={c.id} variant="body2">
+                    Child: <Mono>{c.key}</Mono> {c.title} — {STATUS_LABEL[c.status]}
+                  </Typography>
+                ))}
+              </Box>
             )}
-            {data.children.map((c) => (
-              <Typography key={c.id} variant="body2">
-                Child: <Mono>{c.key}</Mono> {c.title} — {STATUS_LABEL[c.status]}
-              </Typography>
-            ))}
-          </Box>
-        )}
 
-        <LinkedRaid itemKey={item.key} />
-        {!client && <ItemTime itemKey={item.key} />}
+            <LinkedRaid itemKey={item.key} />
+            {!client && <ItemTime itemKey={item.key} />}
 
-        <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mt: 2.5 }}>
-          <Tab value="comments" label={`Comments (${data.comments.length})`} />
-          <Tab value="activity" label="Activity" />
-          <Tab value="links" label={`Links (${data.links.length})`} />
-        </Tabs>
-        <Divider />
-        {tab === 'comments' && (
-          <Comments
-            itemKey={item.key}
-            comments={data.comments}
-            people={people}
-            canPost={canComment(me.user)}
-            client={client}
-          />
-        )}
-        {tab === 'activity' && (
-          <List dense>
-            {data.activity.length === 0 && (
-              <Typography color="text.secondary" sx={{ p: 2 }}>
-                No activity yet.
-              </Typography>
+            <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mt: 2.5 }}>
+              <Tab value="comments" label={`Comments (${data.comments.length})`} />
+              <Tab value="activity" label="Activity" />
+              <Tab value="links" label={`Links (${data.links.length})`} />
+            </Tabs>
+            <Divider />
+            {tab === 'comments' && (
+              <Comments
+                itemKey={item.key}
+                comments={data.comments}
+                people={people}
+                canPost={canComment(me.user)}
+                client={client}
+              />
             )}
-            {data.activity.map((a) => (
-              <ListItem key={a.id}>
-                <ListItemText
-                  primary={a.detail}
-                  secondary={`${people.find((p) => p.id === a.actorId)?.name ?? 'Someone'} · ${new Date(a.at).toLocaleString()}`}
-                />
-              </ListItem>
-            ))}
-          </List>
-        )}
-        {tab === 'links' && (
-          <List dense>
-            {data.links.length === 0 && (
-              <Typography color="text.secondary" sx={{ p: 2 }}>
-                No linked items.
-              </Typography>
+            {tab === 'activity' && (
+              <List dense>
+                {data.activity.length === 0 && (
+                  <Typography color="text.secondary" sx={{ p: 2 }}>
+                    No activity yet.
+                  </Typography>
+                )}
+                {data.activity.map((a) => (
+                  <ListItem key={a.id}>
+                    <ListItemText
+                      primary={a.detail}
+                      secondary={`${people.find((p) => p.id === a.actorId)?.name ?? 'Someone'} · ${new Date(a.at).toLocaleString()}`}
+                    />
+                  </ListItem>
+                ))}
+              </List>
             )}
-            {data.links.map((l) => (
-              <ListItem key={l.id}>
-                <ListItemText
-                  primary={
-                    <>
-                      <Chip
-                        size="small"
-                        label={
-                          l.type === 'blocks' ? (l.fromId === item.id ? 'blocks' : 'blocked by') : l.type
-                        }
-                        sx={{ mr: 1 }}
-                      />
-                      <Mono>{l.other.key}</Mono> {l.other.title}
-                    </>
-                  }
-                  secondary={STATUS_LABEL[l.other.status]}
-                />
-              </ListItem>
-            ))}
-          </List>
+            {tab === 'links' && (
+              <List dense>
+                {data.links.length === 0 && (
+                  <Typography color="text.secondary" sx={{ p: 2 }}>
+                    No linked items.
+                  </Typography>
+                )}
+                {data.links.map((l) => (
+                  <ListItem key={l.id}>
+                    <ListItemText
+                      primary={
+                        <>
+                          <Chip
+                            size="small"
+                            label={
+                              l.type === 'blocks' ? (l.fromId === item.id ? 'blocks' : 'blocked by') : l.type
+                            }
+                            sx={{ mr: 1 }}
+                          />
+                          <Mono>{l.other.key}</Mono> {l.other.title}
+                        </>
+                      }
+                      secondary={STATUS_LABEL[l.other.status]}
+                    />
+                  </ListItem>
+                ))}
+              </List>
+            )}
+          </>
         )}
       </Box>
       <OfflineAcceptDialog
