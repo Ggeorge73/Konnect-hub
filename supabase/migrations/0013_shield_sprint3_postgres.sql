@@ -39,8 +39,8 @@ grant execute on function public.user_can_see_project(uuid, uuid) to service_rol
 --   bac_cents   project_financials.bac
 --   milestones  deliverables with an ev_weight: planned from the phase start (or project start)
 --               to the deliverable due date (or phase end, or project target); 100% once accepted
---   actuals     cost per day: time_entries.hours x profile_rates.cost_rate
--- TODO(time tracking): only count approved time once time_entries carries an approval state.
+--   actuals     cost per day: approved time_entries.hours x profile_rates.cost_rate (0012 adds
+--               the approval lifecycle; draft, submitted and rejected time never counts)
 -- ---------------------------------------------------------------------------
 create or replace function public.project_evm_inputs(p_project uuid)
 returns jsonb language sql stable security definer set search_path = public, pg_temp as $$
@@ -66,7 +66,7 @@ returns jsonb language sql stable security definer set search_path = public, pg_
         select t.entry_date, round(sum(t.hours * coalesce(r.cost_rate, 0)) * 100) as cents
         from public.time_entries t
         left join public.profile_rates r on r.profile_id = t.user_id
-        where t.project_id = p_project
+        where t.project_id = p_project and t.status = 'approved'
         group by t.entry_date
       ) a), '[]'::jsonb))
 $$;

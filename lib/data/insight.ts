@@ -41,6 +41,7 @@ import { deriveRaid, type RaidView } from '../domain/raid';
 import { canSeeDeliverable } from '../domain/deliverables';
 import { isPassed } from '../domain/gates';
 import { GATE_NAMES } from '../domain/templates';
+import { approvedTimeActuals, mergeActuals } from '../domain/ledger';
 import { db } from './memory';
 import { logActivity, requireVisibleProject, writeAudit } from './gates';
 import { ForbiddenError, ValidationError } from './errors';
@@ -63,18 +64,28 @@ export const isoDay = (now: Date) => now.toISOString().slice(0, 10);
 /**
  * Actual cost (cents) of a project up to and including `asOf` (YYYY-MM-DD).
  *
- * TODO(Sprint 4, time tracking): switch this hook to Σ approved time entries × the person's cost
- * rate (profile_rates) for entries dated on or before `asOf`. Until then AC comes from the seeded
- * `insight.actuals` array. Everything else (EVM, burn chart, PDF, portfolio) reads AC through here.
+ * Sprint 4 (TIME-01): AC = Σ approved time entries × the person's internal cost rate
+ * (Admin-only profile cost rate), in integer cents, on each entry's date. The seeded / imported
+ * `insight.actuals` are only a fallback for dates BEFORE the project's first approved entry (the
+ * cutover, see mergeActuals in lib/domain/ledger.ts): before the cutover AC is the seeded actuals,
+ * from the cutover on it is seeded actuals dated before the cutover + approved time. A project
+ * with no approved time keeps its seeded actuals. Draft, submitted and rejected time never count.
+ * Everything else (EVM, burn chart, PDF, portfolio) reads AC through here. On Postgres the same
+ * time-based sum is public.project_actual_cost() (0012_ledger.sql).
  */
 export function actualCostFor(projectId: string, asOf: string): Cents {
   return actualToDate(actualsFor(projectId), asOf);
 }
 
 function actualsFor(projectId: string) {
-  return db()
-    .insight.actuals.filter((a) => a.projectId === projectId)
-    .sort((a, b) => a.date.localeCompare(b.date));
+  const d = db();
+  const seeded = d.insight.actuals.filter((a) => a.projectId === projectId);
+  const rate = (userId: string) => d.profiles.find((p) => p.id === userId)?.costRate;
+  const fromTime = approvedTimeActuals(
+    d.ledger.timeEntries.filter((e) => e.projectId === projectId),
+    rate,
+  );
+  return mergeActuals(seeded, fromTime);
 }
 
 function phasesOf(projectId: string): Phase[] {

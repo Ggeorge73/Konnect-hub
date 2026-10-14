@@ -24,6 +24,9 @@ import { createPostgresReportStore } from './reports-postgres';
 import { createPostgresSignalStore, pgNotify } from './notify-postgres';
 import { SEED_PROFILE_UUID } from './seed-ids';
 import { clearOutbox, outbox } from '../email/send';
+import { runLedgerContract } from './contract-ledger';
+import { createPostgresLedgerStore } from './ledger-postgres';
+import { createPostgresAuditStore } from './audit-postgres';
 
 /**
  * Runs the Repo contract against Postgres + RLS. Skipped unless TEST_DATABASE_URL points at a
@@ -98,6 +101,16 @@ describe.skipIf(!url)('postgres repo (TEST_DATABASE_URL)', () => {
       metrics: createPostgresMetricsStore(sql!),
       reports: createPostgresReportStore(sql!),
       signal: createPostgresSignalStore(sql!),
+    }),
+    sessionFor,
+    reset,
+  );
+  runLedgerContract(
+    'postgres',
+    () => ({
+      repo: createPostgresRepo(sql!),
+      ledger: createPostgresLedgerStore(sql!),
+      audit: createPostgresAuditStore(sql!),
     }),
     sessionFor,
     reset,
@@ -212,7 +225,7 @@ describe.skipIf(!url)('postgres repo (TEST_DATABASE_URL)', () => {
     ).rejects.toThrow('internal notifications cannot be sent to client users');
   });
 
-  it('EVM inputs are server-only: AC from time x cost rate, EV from deliverable weights', async () => {
+  it('EVM inputs are server-only: AC from approved time x cost rate, EV from deliverable weights', async () => {
     await reset();
     const insight = createPostgresInsightStore(sql!);
     const lead = await sessionFor('u_lead');
@@ -223,7 +236,11 @@ describe.skipIf(!url)('postgres repo (TEST_DATABASE_URL)', () => {
     ).rejects.toThrow();
     const [{ ac }] = await sql!`select round(sum(t.hours * r.cost_rate) * 100)::bigint as ac
                                 from public.time_entries t join public.profile_rates r on r.profile_id = t.user_id
-                                where t.project_id = ${p.id}`;
+                                where t.project_id = ${p.id} and t.status = 'approved'`;
+    // Only approved time counts (KH-37); the seeded entries are drafts.
+    const [{ n }] = await sql!`select count(*)::int as n from public.time_entries
+                               where project_id = ${p.id} and status <> 'approved'`;
+    expect(n).toBeGreaterThan(0);
     const d = await insight.getDashboard(lead, 'EHR', new Date('2026-10-12T12:00:00Z'));
     expect(d.evm!.ac).toBe(Number(ac));
     expect(d.evm!.bac).toBe(48_000_000);

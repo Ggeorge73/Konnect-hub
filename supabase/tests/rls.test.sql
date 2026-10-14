@@ -1190,13 +1190,16 @@ begin
   perform tests.ok(public.user_can_see_project(tests.uid('admin'), tests.rvb()), 'admin sees every project');
   perform tests.ok(not public.user_can_see_project(gen_random_uuid(), tests.ehr()), 'unknown user sees nothing');
 
-  -- EVM inputs: BAC in cents, actual cost = hours x cost rate, EV baseline from weighted deliverables.
+  -- EVM inputs: BAC in cents, actual cost = approved hours x cost rate, EV baseline from weighted deliverables.
   v_j := public.project_evm_inputs(tests.ehr());
   perform tests.eq((v_j ->> 'bac_cents')::bigint, 48000000, 'EHR BAC in cents');
-  perform tests.eq((select sum((a ->> 'amount_cents')::bigint)::bigint from jsonb_array_elements(v_j -> 'actuals') a),
-                   (select round(sum(t.hours * r.cost_rate) * 100)::bigint from public.time_entries t
-                    join public.profile_rates r on r.profile_id = t.user_id where t.project_id = tests.ehr()),
-                   'actual cost is time x cost rate');
+  perform tests.eq(coalesce((select sum((a ->> 'amount_cents')::bigint)::bigint from jsonb_array_elements(v_j -> 'actuals') a), 0),
+                   coalesce((select round(sum(t.hours * r.cost_rate) * 100)::bigint from public.time_entries t
+                    join public.profile_rates r on r.profile_id = t.user_id
+                    where t.project_id = tests.ehr() and t.status = 'approved'), 0),
+                   'actual cost is approved time x cost rate');
+  perform tests.ok(exists (select 1 from public.time_entries t where t.project_id = tests.ehr() and t.status <> 'approved'),
+                   'EHR has unapproved time that must not count');
   perform tests.eq(jsonb_array_length(v_j -> 'milestones'), 0, 'no EV milestones without weights');
   update public.deliverables set ev_weight = 2 where project_id = tests.ehr();
   v_j := public.project_evm_inputs(tests.ehr());
@@ -1310,6 +1313,116 @@ begin
                    'riverbend sees no Peachtree org (logo included)');
   perform tests.throws(format('select public.create_client_request(%L, %L)', tests.ehr(), 'Cross-org request'),
                        'riverbend files a request into a Peachtree project');
+end $$;
+rollback;
+
+-- ===========================================================================
+-- 19. Ledger: time tracking lifecycle, approved time as actual cost, permission-change audit
+--     (0012_ledger.sql).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_id uuid;
+  v_other uuid;
+  v_ac0 bigint;
+begin
+  -- Only internal people log time; associates only on assigned projects; quarter hours only.
+  perform tests.as_user('assoc');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.rvb(), tests.item('RVB-2'), tests.uid('assoc')), 'associate logs on an unassigned project');
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('sponsor')), 'client logs time');
+  perform tests.as_user('lead');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('sponsor')), 'lead logs time for a client user');
+  v_ac0 := public.project_actual_cost(tests.ehr(), '2027-01-31');
+
+  perform tests.as_user('dev');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 0.3)',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('dev')), 'non-quarter hours');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours) values (%L, %L, %L, ''2027-01-13'', 1)',
+                              tests.ehr(), tests.item('RVB-3'), tests.uid('dev')), 'item from another project');
+  perform tests.throws(format('insert into public.time_entries (project_id, item_id, user_id, entry_date, hours, status) values (%L, %L, %L, ''2027-01-13'', 1, ''approved'')',
+                              tests.ehr(), tests.item('EHR-7'), tests.uid('dev')), 'insert pre-approved time');
+  insert into public.time_entries (project_id, item_id, user_id, entry_date, hours, note)
+  values (tests.ehr(), tests.item('EHR-7'), tests.uid('dev'), '2027-01-13', 2.5, 'Dry-run') returning id into v_id;
+  perform tests.ok((select status = 'draft' from public.time_entries where id = v_id), 'new time is a draft');
+  perform tests.ok(public.item_logged_hours(tests.item('EHR-7')) >= 2.5, 'item total includes the new entry');
+  perform tests.throws('select public.project_actual_cost(tests.ehr(), ''2027-01-31'')', 'team member reads actual cost');
+  -- The owner cannot approve their own time.
+  perform tests.throws(format('update public.time_entries set status = ''approved'' where id = %L', v_id), 'owner approves own time');
+  update public.time_entries set status = 'submitted' where id = v_id;
+  perform tests.ok((select submitted_at is not null from public.time_entries where id = v_id), 'submitted_at set');
+  perform tests.throws(format('update public.time_entries set hours = 3 where id = %L', v_id), 'owner edits submitted time');
+  perform tests.throws(format('delete from public.time_entries where id = %L', v_id), 'owner deletes submitted time');
+
+  -- Other team members never see someone else's time; clients see none and get no item totals.
+  perform tests.as_user('team');
+  perform tests.eq(tests.count('time_entries', format('id = %L', v_id)), 0, 'team member sees a colleague''s time');
+  perform tests.ok(public.item_logged_hours(tests.item('EHR-7')) >= 2.5, 'team member sees the item total');
+  update public.time_entries set status = 'approved' where id = v_id;  -- invisible row: no effect
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.item_logged_hours(%L)', tests.item('EHR-7')), 'client reads logged hours');
+  perform tests.eq(tests.count('time_entries'), 0, 'client sees time entries');
+
+  -- The Lead rejects with a reason; the owner edits (back to draft) and resubmits; the Lead approves.
+  perform tests.as_user('lead');
+  perform tests.ok((select status = 'submitted' from public.time_entries where id = v_id), 'team member could not approve');
+  perform tests.throws(format('update public.time_entries set status = ''rejected'' where id = %L', v_id), 'reject without a reason');
+  update public.time_entries set status = 'rejected', reject_reason = 'Split by ticket' where id = v_id;
+  perform tests.ok((select decided_by = tests.uid('lead') from public.time_entries where id = v_id), 'decided_by is the lead');
+  perform tests.as_user('dev');
+  update public.time_entries set hours = 2.5, note = 'Dry-run (EHR-7 only)' where id = v_id;
+  perform tests.ok((select status = 'draft' from public.time_entries where id = v_id), 'editing rejected time makes a draft');
+  update public.time_entries set status = 'submitted' where id = v_id;
+  perform tests.as_user('lead');
+  update public.time_entries set status = 'approved' where id = v_id;
+  perform tests.eq(public.project_actual_cost(tests.ehr(), '2027-01-31') - v_ac0, 23750,
+                   'approved 2.5 h x $95 adds $237.50 to actual cost');
+  perform tests.eq(public.project_actual_cost(tests.ehr(), '2027-01-12') - v_ac0, 0, 'cost counts from the entry date');
+  perform tests.eq(tests.count('profile_rates'), 0, 'lead still cannot read cost rates');
+
+  -- Approved time is locked for everyone, even the table owner.
+  perform tests.throws(format('update public.time_entries set hours = 1 where id = %L', v_id), 'lead edits approved time');
+  perform tests.throws(format('update public.time_entries set status = ''rejected'', reject_reason = ''x'' where id = %L', v_id),
+                       'lead rejects approved time');
+  perform tests.as_user('dev');
+  perform tests.throws(format('delete from public.time_entries where id = %L', v_id), 'owner deletes approved time');
+  perform tests.as_owner();
+  perform tests.throws(format('delete from public.time_entries where id = %L', v_id), 'table owner deletes approved time');
+
+  -- Decisions are audited in the database.
+  perform tests.eq(tests.count('audit_log', format('entity = ''time_entry'' and entity_id = %L and action = ''time.reject''', v_id)), 1,
+                   'rejection audited');
+  perform tests.eq(tests.count('audit_log', format('entity = ''time_entry'' and entity_id = %L and action = ''time.approve'' and actor_id = %L',
+                                                   v_id, tests.uid('lead'))), 1, 'approval audited');
+
+  -- A Lead cannot approve time on a project they don't lead (PSR is led by the Admin).
+  perform tests.as_user('team');
+  insert into public.time_entries (project_id, item_id, user_id, entry_date, hours)
+  values (tests.psr(), tests.item('PSR-1'), tests.uid('team'), '2027-01-13', 1) returning id into v_other;
+  update public.time_entries set status = 'submitted' where id = v_other;
+  perform tests.as_user('lead');
+  perform tests.eq(tests.count('time_entries', format('id = %L', v_other)), 0, 'lead sees time on a project they don''t lead');
+  perform tests.as_user('admin');
+  update public.time_entries set status = 'approved' where id = v_other;
+  perform tests.ok((select status = 'approved' from public.time_entries where id = v_other), 'admin approves any project');
+
+  -- Permission changes are audited: role changes and project membership.
+  perform tests.as_user('admin');
+  update public.profiles set role = 'delivery_lead' where id = tests.uid('team');
+  perform tests.eq(tests.count('audit_log', format('action = ''permission.role_change'' and entity_id = %L and after->>''role'' = ''delivery_lead''',
+                                                   tests.uid('team'))), 1, 'role change audited');
+  perform tests.as_user('lead');
+  insert into public.project_members (project_id, user_id, project_role) values (tests.rvb(), tests.uid('team'), 'QA');
+  update public.project_members set project_role = 'QA lead' where project_id = tests.rvb() and user_id = tests.uid('team');
+  delete from public.project_members where project_id = tests.rvb() and user_id = tests.uid('team');
+  perform tests.as_user('admin');
+  perform tests.eq(tests.count('audit_log', format('entity = ''project_member'' and entity_id = %L and project_id = %L and actor_id = %L',
+                                                   tests.uid('team'), tests.rvb(), tests.uid('lead'))), 3,
+                   'member add / change / remove audited');
 end $$;
 rollback;
 

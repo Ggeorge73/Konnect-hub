@@ -44,6 +44,7 @@ import { useRaid } from './api';
 import { HeatMap, type Cell } from './HeatMap';
 import { RaidDialog } from './RaidDialog';
 import { EscalateChip, ScoreChip, SeverityChip, SlaBreachedChip, StaleChip } from './RaidChips';
+import { ExportMenu } from '@/features/exports/ExportMenu';
 
 const EMPTY: Record<RaidKind, string> = {
   risk: 'No risks logged yet. Projects that log risks early recover faster.',
@@ -129,7 +130,10 @@ export function RaidRegister() {
               <Tab key={k.id} value={k.id} label={`${k.plural} (${byKind[k.id].length})`} />
             ))}
           </Tabs>
-          <Box sx={{ pb: 1 }}>{entries.length > 0 && addButton}</Box>
+          <Stack direction="row" spacing={1} sx={{ pb: 1 }}>
+            <ExportMenu entity="raid" params={{ project: project.key, kind: tab }} />
+            {entries.length > 0 && addButton}
+          </Stack>
         </Stack>
       </Paper>
 

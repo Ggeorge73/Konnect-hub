@@ -276,10 +276,15 @@ insert into public.raid_links (project_id, raid_id, item_id) values
   ('c0000000-0000-4000-8000-000000000002', md5('rd_rvb_1')::uuid, md5('wi_rvb_2')::uuid);
 
 -- Time, allocations, status reports -----------------------------------------------
-insert into public.time_entries (id, project_id, item_id, user_id, entry_date, hours, note) values
-  (md5('te_1')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('wi_ehr_7')::uuid, 'b0000000-0000-4000-8000-000000000004', '2026-10-07', 6, 'Dry-run'),
-  (md5('te_2')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('wi_ehr_12')::uuid, 'b0000000-0000-4000-8000-000000000005', '2026-10-07', 3, 'Vendor call'),
-  (md5('te_3')::uuid, 'c0000000-0000-4000-8000-000000000002', md5('wi_rvb_3')::uuid, 'b0000000-0000-4000-8000-000000000004', '2026-10-07', 2, 'Baseline');
+-- Time lifecycle (0012_ledger.sql): one approved EHR entry feeds EVM actual cost; the submitted
+-- and draft entries show that only approved time counts.
+insert into public.time_entries (id, project_id, item_id, user_id, entry_date, hours, note, status, submitted_at, decided_by, decided_at) values
+  (md5('te_1')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('wi_ehr_7')::uuid, 'b0000000-0000-4000-8000-000000000004', '2026-10-07', 6, 'Dry-run',
+   'approved', '2026-10-09 17:00+00', 'b0000000-0000-4000-8000-000000000002', '2026-10-10 09:00+00'),
+  (md5('te_2')::uuid, 'c0000000-0000-4000-8000-000000000001', md5('wi_ehr_12')::uuid, 'b0000000-0000-4000-8000-000000000005', '2026-10-07', 3, 'Vendor call',
+   'submitted', '2026-10-09 17:00+00', null, null),
+  (md5('te_3')::uuid, 'c0000000-0000-4000-8000-000000000002', md5('wi_rvb_3')::uuid, 'b0000000-0000-4000-8000-000000000004', '2026-10-07', 2, 'Baseline',
+   'draft', null, null, null);
 
 -- Weekly allocations (0011_capacity.sql; mirrors lib/data/seed-capacity.ts): every member's
 -- hours per week × allocation % for the next 12 ISO weeks within the project window, plus the

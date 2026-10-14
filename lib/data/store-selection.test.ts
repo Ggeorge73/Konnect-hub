@@ -10,6 +10,8 @@ import { insightStore, memoryInsightStore } from './insight';
 import { memoryMetricsStore, metricsStore } from './metrics';
 import { memoryReportStore, reportStore } from './reports';
 import { memorySignalStore, signalStore } from './notify';
+import { ledgerStore, memoryLedgerStore } from './ledger';
+import { auditStore, memoryAuditStore } from './audit';
 
 const all = () => [
   [getRepo(), memoryRepo],
@@ -22,6 +24,8 @@ const all = () => [
   [metricsStore(), memoryMetricsStore],
   [reportStore(), memoryReportStore],
   [signalStore(), memorySignalStore],
+  [ledgerStore(), memoryLedgerStore],
+  [auditStore(), memoryAuditStore],
 ];
 
 describe('store selection', () => {

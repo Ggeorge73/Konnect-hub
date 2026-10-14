@@ -3,6 +3,8 @@ import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { isSupabaseConfigured } from '@/lib/config';
 import { callbackErrorReason, linkDecision } from '@/lib/auth/oauth';
 import { getSql, loadSession } from '@/lib/data/postgres';
+import { recordLogin } from '@/lib/data/audit';
+import { requestIp } from '@/lib/export-http';
 
 /**
  * Magic-link and Google / Microsoft landing (KH-41): exchanges the PKCE code for a session cookie,
@@ -25,6 +27,10 @@ export async function GET(req: Request) {
         await supabase.auth.signOut();
         return NextResponse.redirect(new URL('/auth/invite', url));
       }
+      // AUD-01: audit the sign-in (after the invite check); never block the redirect on it.
+      const provider = (data.user.app_metadata?.provider as string | undefined) ?? 'email';
+      const method = provider === 'email' ? 'magic_link' : `oauth_${provider}`;
+      await recordLogin(data.user.id, method, requestIp(req)).catch(console.error);
       return NextResponse.redirect(new URL('/', url));
     }
   }

@@ -430,6 +430,13 @@ export async function logActivity(
     values (${projectId}, ${itemId ?? null}, ${s.user.id}, ${action}, ${detail}, ${visibility})`;
 }
 
+/**
+ * A jsonb parameter. postgres.js serialises jsonb parameters itself, so passing JSON.stringify(v)
+ * would store a JSON *string*; tx.json(v) stores the object.
+ */
+export const jsonParam = (tx: Tx, v: unknown) =>
+  v === undefined || v === null ? null : tx.json(v as Parameters<Tx['json']>[0]);
+
 export async function audit(
   tx: Tx,
   s: Session,
@@ -443,8 +450,7 @@ export async function audit(
   await tx`
     insert into public.audit_log (actor_id, project_id, action, entity, entity_id, before, after)
     values (${s.user.id}, ${projectId}, ${action}, ${entity}, ${entityId},
-            ${before === undefined ? null : jsonb(tx, before)}::jsonb,
-            ${after === undefined ? null : jsonb(tx, after)}::jsonb)`;
+            ${jsonParam(tx, before)}::jsonb, ${jsonParam(tx, after)}::jsonb)`;
 }
 
 function filterSql(tx: Tx, f: ItemFilters) {

@@ -29,6 +29,7 @@ import type { Milestone } from '@/lib/domain/portal';
 import { PortalSectionNav } from './PortalSectionNav';
 import { MilestonesTimeline } from './MilestonesTimeline';
 import { SubmitRequestButton } from './RequestDialog';
+import { ExportMenu } from '@/features/exports/ExportMenu';
 
 const anchor = { scrollMarginTop: 120 } as const;
 
@@ -96,9 +97,12 @@ export function PortalProject({
         </Box>
 
         <Paper id="work" sx={{ borderRadius: 4, ...anchor }}>
-          <Typography variant="h3" component="h2" sx={{ p: 2 }}>
-            Shared work
-          </Typography>
+          <Stack direction="row" alignItems="center" sx={{ p: 2 }}>
+            <Typography variant="h3" component="h2" sx={{ flex: 1 }}>
+              Shared work
+            </Typography>
+            {visible.length > 0 && <ExportMenu entity="items" params={{ project: bundle.project.key }} />}
+          </Stack>
           {visible.length === 0 ? (
             <EmptyState
               title="Nothing shared yet"
