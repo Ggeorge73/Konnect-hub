@@ -10,7 +10,7 @@ import {
   type CustomFieldPatch,
   type FieldValues,
 } from '../domain/admin';
-import { canEditItems, canSeeProject, canSeeVisibility } from '../domain/permissions';
+import { canEditItems, canSeeProject, canSeeVisibility, isClientRole } from '../domain/permissions';
 import { db } from './memory';
 import { newId } from './ids';
 import { ForbiddenError, NotFoundError, ValidationError } from './errors';
@@ -104,13 +104,21 @@ function valuesOf(s: Session, itemId: string): FieldValues {
   );
 }
 
+/**
+ * Field definitions are workspace-wide, but a select field's options can name one client's data (e.g.
+ * their sites), so client users get shared definitions without options: they only display values on
+ * the items they can see and can never set them (setItemValue requires canEditItems).
+ */
+export const forViewer = (user: Session['user'], f: CustomField): CustomField =>
+  isClientRole(user.role) ? { ...f, options: [] } : f;
+
 export const memoryCustomFieldStore: CustomFieldStore = {
   async listFields(s, opts = {}) {
     return fields()
       .filter((f) => canSeeField(s.user, f))
       .filter((f) => !f.archivedAt || (opts.includeArchived && s.user.role === 'admin'))
       .sort((a, b) => a.position - b.position)
-      .map((f) => ({ ...f, options: [...f.options] }));
+      .map((f) => forViewer(s.user, { ...f, options: [...f.options] }));
   },
 
   async createField(s, input, ip) {

@@ -3,7 +3,7 @@ import { adminStore } from '@/lib/data/admin';
 import { requireAdmin } from '@/lib/data/admin-rules';
 import { NotFoundError } from '@/lib/data/errors';
 import { BRANDING_BUCKET, LOGO_TYPES, MAX_LOGO_BYTES } from '@/lib/domain/files';
-import { readCheckedFile } from '@/lib/files/http';
+import { readCheckedFile, readForm } from '@/lib/files/http';
 import { fileStorage } from '@/lib/files/storage';
 import { requestIp } from '@/lib/export-http';
 
@@ -19,7 +19,7 @@ export const POST = (req: Request, { params }: Ctx) =>
     const { id } = await params;
     const org = (await adminStore().listClientOrgs(session)).find((o) => o.id === id);
     if (!org) throw new NotFoundError('Client not found');
-    const f = await readCheckedFile(await req.formData(), { maxBytes: MAX_LOGO_BYTES, types: LOGO_TYPES });
+    const f = await readCheckedFile(await readForm(req), { maxBytes: MAX_LOGO_BYTES, types: LOGO_TYPES });
     await fileStorage().put(BRANDING_BUCKET, `orgs/${org.id}/logo`, f.bytes, f.type);
     return adminStore().updateClientOrg(
       session,

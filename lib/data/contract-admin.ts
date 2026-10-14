@@ -306,6 +306,8 @@ export function runAdminContract(
       const internal = await st.fields.listFields(dev);
       expect(internal.map((f) => f.name)).toEqual(['Site', 'Cost centre']);
       expect((await st.fields.listFields(sponsor)).map((f) => f.name)).toEqual(['Site']);
+      // Select options can name another client's data (sites), so clients get none; staff get them all.
+      expect((await st.fields.listFields(sponsor)).every((f) => f.options.length === 0)).toBe(true);
       const byName = Object.fromEntries(internal.map((f) => [f.name, f.id]));
 
       expect(Object.values(await st.fields.getItemValues(dev, 'EHR-9')).sort()).toEqual([

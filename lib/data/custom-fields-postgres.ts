@@ -2,7 +2,7 @@ import type { Session } from '../domain/types';
 import type { CustomField, FieldValues } from '../domain/admin';
 import { canEditItems } from '../domain/permissions';
 import type { CustomFieldStore } from './custom-fields';
-import { applyPatch, CANNOT_EDIT_ITEM, checkFieldInput, checkValue } from './custom-fields';
+import { applyPatch, CANNOT_EDIT_ITEM, checkFieldInput, checkValue, forViewer } from './custom-fields';
 import {
   asUser,
   audit,
@@ -55,9 +55,9 @@ export function createPostgresCustomFieldStore(sql: Sql): CustomFieldStore {
   return {
     async listFields(s, opts = {}) {
       return run(s, undefined, async (tx) =>
-        (await allFields(tx)).filter(
-          (f) => !f.archivedAt || (opts.includeArchived && s.user.role === 'admin'),
-        ),
+        (await allFields(tx))
+          .filter((f) => !f.archivedAt || (opts.includeArchived && s.user.role === 'admin'))
+          .map((f) => forViewer(s.user, f)),
       );
     },
 

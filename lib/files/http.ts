@@ -59,8 +59,17 @@ export async function readCheckedFile(
 const TARGETS: AttachmentTarget[] = ['work_item', 'raid', 'comment'];
 
 /** POST /api/attachments body: file, entityType, entityId and (staff only) visibility. */
+/** Parses a multipart upload; a non-form body is a client error (400), not a server crash. */
+export async function readForm(req: Request): Promise<FormData> {
+  try {
+    return await req.formData();
+  } catch {
+    throw new ValidationError('Upload the file as multipart/form-data.');
+  }
+}
+
 export async function uploadAttachment(session: Session, req: Request, ip?: string) {
-  const form = await req.formData();
+  const form = await readForm(req);
   const entityType = String(form.get('entityType') ?? '') as AttachmentTarget;
   const entityId = String(form.get('entityId') ?? '');
   if (!TARGETS.includes(entityType) || !entityId)

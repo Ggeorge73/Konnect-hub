@@ -94,10 +94,14 @@ const BODY = {
 };
 
 /** Leak markers: Peachtree data a Riverbend user must never receive. */
-const LEAK = /Peachtree|peachtreeclinic|Clinic EHR|Grace|"p_ehr"|"wi_ehr_|"bac":\s*[1-9]|costRate/i;
+// Includes Peachtree's sites, which once leaked through a workspace custom field's select options.
+const LEAK =
+  /Peachtree|peachtreeclinic|Clinic EHR|Grace|Midtown|Decatur|Marietta|"p_ehr"|"wi_ehr_|"bac":\s*[1-9]|costRate/i;
 
 /** Routes scoped to the caller only (no other tenant's object involved): a 2xx is fine without leaks. */
 const SELF_SCOPED = new Set([
+  // Workspace field definitions: clients get shared ones only, with no select options.
+  'GET /api/custom-fields',
   'GET /api/session',
   'GET /api/reauth',
   'GET /api/notifications',
@@ -149,7 +153,8 @@ test.describe('KH-47: every API route as a client of the other org', () => {
         const body = route.includes('realtime') && status === 200 ? '' : await res.text();
         const self = SELF_SCOPED.has(`${m} ${route}`);
         const ok =
-          [401, 403, 404].includes(status) || (m !== 'GET' && status === 400) || (self && status < 300);
+          // 400 is a validation error (e.g. missing required query params): no data, and LEAK still applies.
+          [400, 401, 403, 404].includes(status) || (self && status < 300);
         if (!ok) failures.push(`${m} ${url} -> ${status} ${body.slice(0, 160)}`);
         if (LEAK.test(body))
           failures.push(`${m} ${url} leaks: ${body.match(LEAK)?.[0]} in ${body.slice(0, 160)}`);
