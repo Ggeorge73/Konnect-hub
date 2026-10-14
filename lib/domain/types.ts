@@ -184,3 +184,25 @@ export interface Session {
   user: Profile;
   org: Organization;
 }
+
+/**
+ * KH-47 "View as client" preview. Set on the Session while an Admin previews the portal as a
+ * client role and org; `user`/`org` are then the previewed client, and every write is refused.
+ */
+export interface Impersonation {
+  adminId: string;
+  adminName: string;
+  role: Role;
+  orgId: string;
+  orgName: string;
+  /** The representative client profile the preview renders as. */
+  asUserId: string;
+  asUserName: string;
+  startedAt: string;
+  readOnly: true;
+}
+
+// Declaration merge (append-only edit): the optional preview marker on Session.
+export interface Session {
+  impersonation?: Impersonation;
+}

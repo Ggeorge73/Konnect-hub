@@ -12,6 +12,7 @@ import type {
 import type {
   ActivityEvent,
   Comment,
+  Impersonation,
   Organization,
   Profile,
   Project,
@@ -46,6 +47,8 @@ export interface Me {
   user: Profile;
   org: Organization;
   auth: 'supabase' | 'demo';
+  /** KH-47: set while an Admin previews the portal as a client (read-only). */
+  impersonation?: Impersonation | null;
 }
 export const useMe = () => useQuery({ queryKey: qk.me, queryFn: () => api<Me>('/api/session') });
 export const useProjects = () =>

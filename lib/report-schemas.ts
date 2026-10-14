@@ -1,7 +1,9 @@
 import { z } from 'zod';
+import { sanitizeHtml } from './security/sanitize-html';
 
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD');
-const html = z.string().max(50_000);
+/** Report section HTML: length-capped, then allowlist-sanitized before it is stored (KH-47 F-04). */
+const html = z.string().max(50_000).transform(sanitizeHtml);
 
 /** POST /api/reports: generate (or reopen) the draft for a project's week. */
 export const generateReportSchema = z.object({

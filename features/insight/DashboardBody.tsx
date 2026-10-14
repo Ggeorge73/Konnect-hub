@@ -363,14 +363,15 @@ export function DashboardBody({ view, portal = false }: { view: DashboardView; p
                 {view.milestones.map((m) => {
                   const Icon = MILESTONE_ICON[m.kind];
                   return (
-                    <ListItem
-                      key={`${m.kind}-${m.label}-${m.date}`}
-                      disableGutters
-                      sx={{ opacity: m.past ? 0.7 : 1 }}
-                    >
-                      <Icon sx={{ mr: 1.5, color: 'primary.main', fontSize: 20 }} aria-hidden />
+                    <ListItem key={`${m.kind}-${m.label}-${m.date}`} disableGutters>
+                      <Icon
+                        sx={{ mr: 1.5, color: m.past ? 'text.secondary' : 'primary.main', fontSize: 20 }}
+                        aria-hidden
+                      />
+                      {/* A11Y-01: past milestones are muted by colour, not opacity (opacity fails AA in light). */}
                       <ListItemText
                         primary={m.label}
+                        primaryTypographyProps={m.past ? { color: 'text.secondary' } : undefined}
                         secondary={
                           <>
                             <Mono>{fmtDate(m.date)}</Mono>

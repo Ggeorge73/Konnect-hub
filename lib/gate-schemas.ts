@@ -22,7 +22,11 @@ export const decisionSchema = z.object({
   reason: z.string().max(4000).optional(),
 });
 
-export const reauthSchema = z.object({ email: z.string().trim().min(3).max(320) });
+export const reauthSchema = z.object({
+  email: z.string().trim().min(3).max(320),
+  /** Supabase mode (KH-47): verified with Supabase Auth; not needed right after a fresh sign-in. */
+  password: z.string().min(1).max(256).optional(),
+});
 
 const visibility = z.enum(['internal', 'shared']);
 export const deliverableCreateSchema = z.object({

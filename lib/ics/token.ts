@@ -1,11 +1,12 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { serverSecret } from '../security/secrets';
 
 /**
  * Per-user, per-project calendar feed token (ICS-01): `<base64url(userId)>.<HMAC(userId|projectId)>`.
  * The token resolves to the user, so the feed applies that user's visibility rules. Rotating
- * ICS_SECRET revokes every feed URL. Falls back to 'dev-secret' in demo mode.
+ * ICS_SECRET revokes every feed URL. Falls back to 'dev-secret' in demo mode only.
  */
-const secret = () => process.env.ICS_SECRET ?? 'dev-secret';
+const secret = () => serverSecret('ICS_SECRET');
 const mac = (userId: string, projectId: string, key: string) =>
   createHmac('sha256', key).update(`ics|${userId}|${projectId}`).digest('base64url');
 

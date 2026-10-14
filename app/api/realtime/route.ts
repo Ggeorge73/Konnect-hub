@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { unstable_rethrow } from 'next/navigation';
-import { getSession } from '@/lib/session';
+import { getApiSession } from '@/lib/session';
 import { getRepo } from '@/lib/data';
 import { errorStatus } from '@/lib/data/errors';
 import { isClientRole } from '@/lib/domain/permissions';
@@ -29,7 +29,7 @@ export async function GET(req: Request) {
   let client: boolean;
   let id: string;
   try {
-    const session = await getSession();
+    const session = await getApiSession();
     id = (await getRepo().getProjectBundle(session, projectId)).project.id;
     client = isClientRole(session.user.role);
   } catch (e) {

@@ -14,5 +14,9 @@ export class ReauthRequiredError extends ForbiddenError {
     super('reauth_required');
   }
 }
+/** 401: no (valid) session on an API request (KH-47). Extends ForbiddenError so `errorStatus` maps it. */
+export class UnauthorizedError extends ForbiddenError {
+  status = 401;
+}
 export const errorStatus = (e: unknown) =>
   e instanceof ForbiddenError || e instanceof NotFoundError || e instanceof ValidationError ? e.status : 500;

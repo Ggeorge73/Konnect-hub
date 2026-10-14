@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { headers } from 'next/headers';
 import { Providers } from '@/components/providers';
 import { APP_NAME, COMPANY_NAME } from '@/lib/config';
 
@@ -8,7 +9,12 @@ export const metadata: Metadata = {
 };
 export const viewport: Viewport = { themeColor: '#060B1F', width: 'device-width', initialScale: 1 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+/**
+ * Reads the per-request CSP nonce set by middleware.ts. Reading request headers also makes every
+ * page dynamic, which a nonce-based CSP needs: Next.js stamps the nonce on its scripts at render.
+ */
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  await headers();
   return (
     <html lang="en">
       <head>
