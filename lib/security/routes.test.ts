@@ -61,7 +61,10 @@ export function listApiRoutes(dir = API_DIR): { route: string; file: string }[] 
 
 /** Routes that are not session-based and answer 404 without one (documented in docs/security-review.md). */
 const NOT_SESSION_BASED: Record<string, string> = {
+  '/api/dev/mock-crm': 'demo-mode only, 404 when Supabase is configured',
   '/api/dev/outbox': 'demo-mode only, 404 when Supabase is configured',
+  '/api/integrations/crm/events':
+    'HMAC-signed by the CRM instead of a session; 401 without a valid signature',
   '/api/onboarding/reset': 'demo-mode only, 404 when Supabase is configured',
   '/api/projects/[key]/calendar.ics': 'feed token instead of a session; every failure is 404',
   '/api/session/mfa': '404 without DATABASE_URL, else 401 without Supabase claims',

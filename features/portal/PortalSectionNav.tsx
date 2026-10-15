@@ -5,6 +5,7 @@ import { Box, Button } from '@mui/material';
 export const PORTAL_SECTIONS = [
   { id: 'overview', label: 'Overview' },
   { id: 'approvals', label: 'Approvals' },
+  { id: 'review', label: 'For your review' },
   { id: 'work', label: 'Work' },
   { id: 'reports', label: 'Status reports' },
   { id: 'raid', label: 'Risks and issues' },

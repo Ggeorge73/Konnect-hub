@@ -118,7 +118,8 @@ export const RATE_LIMIT_RULES: Rule[] = [
     test: (p) =>
       /^\/api\/projects\/[^/]+\/calendar\.ics$/.test(p) ||
       p === '/api/notifications/digest' ||
-      p === '/api/raid/escalate',
+      p === '/api/raid/escalate' ||
+      p.startsWith('/api/integrations/crm/'),
     policy: POLICIES.public,
   },
   {

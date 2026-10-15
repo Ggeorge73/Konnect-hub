@@ -109,6 +109,7 @@ const SELF_SCOPED = new Set([
   'GET /api/notifications/preferences',
   'PATCH /api/notifications/preferences',
   'GET /api/portal/inbox',
+  'GET /api/portal/review',
   'GET /api/gates/pending',
   'GET /api/deliverables/pending',
   'GET /api/projects',
@@ -125,7 +126,8 @@ const SELF_SCOPED = new Set([
 ]);
 /** Not part of the matrix: demo-only routes (persona switch = the demo's sign-in; the dev outbox). */
 // The demo outbox shows every outgoing email to anyone (404 once Supabase is configured; finding F-16).
-const SKIP = new Set(['POST /api/session', 'GET /api/dev/outbox']);
+// Same for the mock CRM's log of what the Hub sent it (lib/integration/mock-crm.ts).
+const SKIP = new Set(['POST /api/session', 'GET /api/dev/outbox', 'GET /api/dev/mock-crm']);
 
 test.describe('KH-47: every API route as a client of the other org', () => {
   test('route list comes from the filesystem', () => {

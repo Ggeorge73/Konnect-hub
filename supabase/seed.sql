@@ -406,4 +406,41 @@ insert into public.custom_field_values (project_id, item_id, field_id, value) va
   ('c0000000-0000-4000-8000-000000000001', md5('wi_ehr_9')::uuid, md5('cf_cost_centre')::uuid, 'CC-4410'),
   ('c0000000-0000-4000-8000-000000000002', md5('wi_rvb_2')::uuid, md5('cf_site')::uuid, 'County HQ');
 
+-- Konnector CRM integration (0018_crm_integration.sql; mirrors lib/data/seed-crm.ts): EHR and RVB
+-- came from the CRM; Peachtree has a quote and a survey "For your review", Riverbend a survey. ---
+insert into public.crm_accounts (org_id, crm_account_id) values
+  ('a0000000-0000-4000-8000-000000000002', 'acc_peachtree'),
+  ('a0000000-0000-4000-8000-000000000003', 'acc_riverbend');
+insert into public.crm_projects (project_id, crm_account_id, contract_no, value, currency, service_lines,
+                                 scope_summary, acceptance_criteria, documents, handoff_key, created_at) values
+  ('c0000000-0000-4000-8000-000000000001', 'acc_peachtree', 'PCG-2026-014', 480000, 'USD',
+   '{EHR implementation,Go-live support}',
+   'Migrate Peachtree Clinic Group to a new EHR and support go-live across four clinics.',
+   '{All four clinics live on the new EHR,Patient record conversion reconciled to 99.9%,Clinic staff trained and signed off}',
+   '[{"name": "Signed SOW.pdf", "url": "https://crm.konnectortech.com/files/demo-sow.pdf"}]',
+   'seed-handoff-ehr', '2026-08-01T14:00:00Z'),
+  ('c0000000-0000-4000-8000-000000000002', 'acc_riverbend', 'RCIT-2026-002', 310000, 'USD',
+   '{Digital services}',
+   'Online building-permit applications and inspections scheduling for Riverbend County.',
+   '{Permit applications accepted online,Inspections bookable online}',
+   '[]', 'seed-handoff-rvb', '2026-09-10T14:00:00Z');
+insert into public.client_items (id, lineage_id, version, type, org_id, project_id, title, summary, amount,
+                                 currency, lines, terms, respond_by, document, published_at) values
+  ('ci_seed_hypercare_v1', 'lin_seed_hypercare', 1, 'quote', 'a0000000-0000-4000-8000-000000000002',
+   'c0000000-0000-4000-8000-000000000001', 'Go-live hypercare extension',
+   'Four extra weeks of on-site hypercare after the last clinic goes live.', 38400, 'USD',
+   '[{"item": "On-site hypercare consultant", "description": "4 weeks × 40 h", "qty": 160, "unit_price": 210},
+     {"item": "Hypercare reporting", "description": "Weekly stabilization report", "qty": 4, "unit_price": 1200}]',
+   'Net 30. Valid until the respond-by date.', '2026-11-20',
+   '{"name": "Quote Q-2026-031.pdf", "url": "https://crm.konnectortech.com/files/demo-quote.pdf"}',
+   '2026-10-08T15:00:00Z'),
+  ('ci_seed_mobilize_survey_v1', 'lin_seed_mobilize_survey', 1, 'survey', 'a0000000-0000-4000-8000-000000000002',
+   'c0000000-0000-4000-8000-000000000001', 'How did Mobilize go?',
+   'Two minutes: how likely are you to recommend Konnector to a colleague?', null, 'USD', '[]', null, null, null,
+   '2026-09-02T15:00:00Z'),
+  ('ci_seed_rvb_survey_v1', 'lin_seed_rvb_survey', 1, 'survey', 'a0000000-0000-4000-8000-000000000003',
+   'c0000000-0000-4000-8000-000000000002', 'How is the first sprint going?',
+   'How likely are you to recommend Konnector to a colleague?', null, 'USD', '[]', null, null, null,
+   '2026-10-01T15:00:00Z');
+
 commit;

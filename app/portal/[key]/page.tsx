@@ -11,6 +11,8 @@ import { PortalDashboardLink } from '@/features/insight/PortalDashboardLink';
 import { listReports } from '@/lib/data/reports';
 import { NotFoundError } from '@/lib/data/errors';
 import { buildMilestones, canSubmitRequest } from '@/lib/domain/portal';
+import { listItems } from '@/lib/integration/service';
+import { ForYourReview } from '@/features/portal/ForYourReview';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,13 +26,14 @@ export default async function Page({ params }: { params: Promise<{ key: string }
     throw e;
   });
   if (bundle.project.deletedAt) notFound();
-  const [items, gates, deliverables, raid, reports, projects] = await Promise.all([
+  const [items, gates, deliverables, raid, reports, projects, review] = await Promise.all([
     repo.listItems(s, { projectId: bundle.project.id }),
     getGates(s, bundle.project.key),
     listDeliverables(s, bundle.project.key),
     listRaid(s, { projectId: bundle.project.id }),
     listReports(s, { project: bundle.project.key }),
     repo.listProjects(s),
+    listItems(s, bundle.project.key),
   ]);
   const milestones = buildMilestones(
     { sprints: bundle.sprints, phases: bundle.phases, deliverables },
@@ -46,6 +49,7 @@ export default async function Page({ params }: { params: Promise<{ key: string }
       rag={projects.find((p) => p.id === bundle.project.id)?.rag}
       canRequest={canSubmitRequest(s.user.role)}
       overview={<PortalDashboardLink projectKey={bundle.project.key} />}
+      review={<ForYourReview items={review} />}
       approvals={
         <PortalGatesSection
           projectKey={bundle.project.key}
