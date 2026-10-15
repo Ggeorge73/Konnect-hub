@@ -12,9 +12,16 @@ const PEACHTREE = 'org_peachtree';
 const SPONSOR = 'grace@peachtreeclinic.example';
 const shots = process.env.CRM_SCREENSHOTS === '1';
 
+/**
+ * Demo persona via its cookie, without POST /api/session: that endpoint is rate limited (60 a minute
+ * per client) and the whole e2e suite shares the budget, so this spec does not spend it.
+ */
 const asUser = async (page: Page, userId: string) => {
-  const res = await page.request.post('/api/session', { data: { userId } });
-  expect(res.ok()).toBeTruthy();
+  await page
+    .context()
+    .addCookies([{ name: 'kh_user', value: userId, url: test.info().project.use.baseURL! }]);
+  const me = await (await page.request.get('/api/session')).json();
+  expect(me.user.id).toBe(userId);
 };
 
 const crm = async (req: APIRequestContext, data: Record<string, unknown>) => {
