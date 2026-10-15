@@ -11,6 +11,7 @@ More documentation:
 - [`docs/runbook.md`](docs/runbook.md): deploy, backups and restore, secrets, cron jobs, incidents
 - [`docs/user-guide.md`](docs/user-guide.md): one page per role
 - [`docs/TEAM_BRIEF.md`](docs/TEAM_BRIEF.md): engineering conventions for feature teams
+- [`docs/integration.md`](docs/integration.md): the Konnector CRM integration (handoff, health, "For your review")
 
 ## Quick start (demo mode, no accounts needed)
 

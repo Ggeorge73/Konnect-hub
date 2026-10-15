@@ -4,15 +4,16 @@ Schema: `supabase/migrations/0001_core.sql`. Demo data: `supabase/seed.sql`. Tes
 
 ## Entities
 
-| Area          | Tables                                                                                                                                                                                           |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| People        | `organizations` (internal or client), `profiles` (one per `auth.users` row: org, role, MFA, US-person), `profile_rates` (cost rate, admin only)                                                  |
-| Projects      | `projects` (key, client org, lead, methodology, contract, RAG, restricted, template, `next_item_number`, soft delete), `project_financials` (BAC, admin and lead only), `project_members`        |
-| Governance    | `phases` (gates 1 to 5), `gate_criteria`, `gate_reviews` (decision, conditions, reason, decided by/at, IP), `deliverables`, `deliverable_items`                                                  |
-| Delivery      | `sprints`, `work_items` (key such as `EHR-7`, type, status, priority, visibility, `position`, labels, full-text `search_vector`), `acceptance_criteria`, `item_links`, `comments`, `attachments` |
-| RAID and time | `raid_entries` (score is probability times impact; `escalate` when 15 or more), `time_entries`, `allocations`, `status_reports`                                                                  |
-| Feeds         | `notifications`, `notification_prefs`, `activity` (project feed), `audit_log` (append-only)                                                                                                      |
-| Admin console | `templates` (built-in + custom), `project_workflows` (column labels, WIP limits), `custom_fields`, `custom_field_values`, `invites` (role + org), `workspace_settings` (0010, 0017)              |
+| Area          | Tables                                                                                                                                                                                                                        |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| People        | `organizations` (internal or client), `profiles` (one per `auth.users` row: org, role, MFA, US-person), `profile_rates` (cost rate, admin only)                                                                               |
+| Projects      | `projects` (key, client org, lead, methodology, contract, RAG, restricted, template, `next_item_number`, soft delete), `project_financials` (BAC, admin and lead only), `project_members`                                     |
+| Governance    | `phases` (gates 1 to 5), `gate_criteria`, `gate_reviews` (decision, conditions, reason, decided by/at, IP), `deliverables`, `deliverable_items`                                                                               |
+| Delivery      | `sprints`, `work_items` (key such as `EHR-7`, type, status, priority, visibility, `position`, labels, full-text `search_vector`), `acceptance_criteria`, `item_links`, `comments`, `attachments`                              |
+| RAID and time | `raid_entries` (score is probability times impact; `escalate` when 15 or more), `time_entries`, `allocations`, `status_reports`                                                                                               |
+| Feeds         | `notifications`, `notification_prefs`, `activity` (project feed), `audit_log` (append-only)                                                                                                                                   |
+| Admin console | `templates` (built-in + custom), `project_workflows` (column labels, WIP limits), `custom_fields`, `custom_field_values`, `invites` (role + org), `workspace_settings` (0010, 0017)                                           |
+| Konnector CRM | `crm_accounts` (client org ↔ CRM account), `crm_projects` (handoff details, change entries, last health sent), `client_items` (quotes, amendments, renewal offers, surveys), `integration_events` (0018; docs/integration.md) |
 
 Every project-scoped table has its own `project_id` column. Composite foreign keys keep it consistent with the parent row, so RLS can filter on `project_id` directly without joins.
 
@@ -53,6 +54,7 @@ Restricted projects are hidden from internal users who are not US persons, even 
 - **Templates and workflows (0017).** `create_project_from_template()` reads gates and criteria from `templates` (built-ins read-only, custom ones Admin-made, archived ones unusable). `project_workflows` keeps the seven statuses in order; Accepted cannot be renamed or WIP-limited; Admins write, everyone on the project reads.
 - **Custom fields (0017).** Values are checked against the field type (number, date, select options); archived fields take no new values; clients read shared fields on shared items only.
 - **Attachments (0017).** 25 MB per file and a content-type allow-list in the table; a file on a comment must match the comment's parent and is internal when the comment is; clients see a file only when it, its parent and its comment are all visible to them, and they can only upload shared files.
+- **Konnector CRM (0018).** `client_items` are readable by the client's own organization (every client role) and, on projects they can see, by Admins, Leads and Team Members (never Associates); nobody writes them directly. The CRM's events arrive through the server as `service_role`; client users act only through `client_item_record_view()`, `client_item_decide()` (Sponsors; accept needs name and title, request changes a note; each decision is audited) and `client_item_answer_survey()` (Sponsors and Members). `crm_projects` (contract value) is for Admins and Leads; `crm_accounts` and `integration_events` for Admins. `commercial_decided` notifications never reach a client.
 - **MFA flag.** After a TOTP verify, `mark_mfa_enabled()` sets the caller's own `profiles.mfa_enabled`. It needs an `aal2` JWT and never touches another row; direct updates of the flag stay blocked.
 
 ## Data path

@@ -60,6 +60,7 @@ describe('policyFor', () => {
     ['GET', '/api/projects/EHR/calendar.ics', 'public'],
     ['POST', '/api/notifications/digest', 'public'],
     ['POST', '/api/raid/escalate', 'public'],
+    ['POST', '/api/integrations/crm/events', 'public'],
     ['POST', '/api/onboarding/invites', 'invite'],
     ['POST', '/api/onboarding/reset', 'invite'],
     ['GET', '/api/exports/items', 'export'],

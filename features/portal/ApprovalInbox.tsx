@@ -99,7 +99,11 @@ export function ApprovalInbox({
           action={emptyAction}
         />
       ) : (
-        <Stack component="ul" divider={<Divider component="li" aria-hidden />} sx={{ m: 0, p: 0 }}>
+        <Stack
+          component="ul"
+          divider={<Divider component="li" aria-hidden sx={{ listStyle: 'none' }} />}
+          sx={{ m: 0, p: 0 }}
+        >
           {entries.map((e) => {
             const Icon = KIND_ICON[e.kind];
             const due = dueLabel(e.dueDate, today);

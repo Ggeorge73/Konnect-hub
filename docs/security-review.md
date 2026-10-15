@@ -61,6 +61,9 @@ Public by design: the ICS feed (signed per-user, per-project token) and the two 
 | Route                                          | Methods           | Session                     | Object authz (data layer)                                                | Zod (writes)                        |
 | ---------------------------------------------- | ----------------- | --------------------------- | ------------------------------------------------------------------------ | ----------------------------------- |
 | `/api/admin/audit`                             | GET               | `handle`                    | `listAudit` → `requireAuditReader` (Admin)                               | query: `auditQuerySchema`           |
+| `/api/admin/integrations`                      | GET               | `handle`                    | Admin only; `listEvents` (RLS: Admin)                                    | —                                   |
+| `/api/admin/integrations/[id]/retry`           | POST              | `handle`                    | `retryEvent` (Admin)                                                     | —                                   |
+| `/api/admin/integrations/health`               | POST              | `handle`                    | Admin only; `syncHealth`                                                 | —                                   |
 | `/api/capacity/allocations`                    | PUT               | `handle`                    | `capacityStore().setAllocation` (Lead of project / Admin)                | `allocationSchema`                  |
 | `/api/capacity/grid`                           | GET               | `handle`                    | `capacityStore().getGrid` (internal; redacted)                           | —                                   |
 | `/api/dashboards/portfolio`                    | GET               | `handle`                    | `getPortfolio` (403 Associates and clients)                              | —                                   |
@@ -69,10 +72,13 @@ Public by design: the ICS feed (signed per-user, per-project token) and the two 
 | `/api/deliverables/[id]/submit`                | POST              | `handle`                    | `submitDeliverable` (manager)                                            | —                                   |
 | `/api/deliverables/pending`                    | GET               | `handle`                    | `listAwaitingAcceptance` (caller's own)                                  | —                                   |
 | `/api/demo`                                    | DELETE            | `handle`                    | `repo.deleteDemoProject` (Admin)                                         | —                                   |
+| `/api/dev/mock-crm`                            | GET, POST         | none (demo only)            | 404 whenever Supabase is configured (like F-16)                          | `simulate` (POST)                   |
 | `/api/dev/outbox`                              | GET               | none (demo only)            | 404 whenever Supabase is configured (F-16)                               | —                                   |
 | `/api/exports/[entity]`                        | GET               | `handleFile`                | `runExport` per entity (same filters as the list views; audited)         | query: `isExportFormat`, entity set |
 | `/api/gates/pending`                           | GET               | `handle`                    | `listPendingReviews` (caller's own)                                      | —                                   |
 | `/api/gates/reviews/[id]/decide`               | POST              | `handle` + re-auth          | `decideGate` (Client Sponsor of the org; fresh re-auth; RLS + RPC)       | `decisionSchema`                    |
+| `/api/integrations/crm/cron`                   | POST              | `x-cron-secret` or `handle` | Admin (or the scheduler); `runCron`                                      | —                                   |
+| `/api/integrations/crm/events`                 | POST              | **HMAC signature**          | `receive`: signature, contract (strict + cost-field guard), idempotency  | CRM contract schemas                |
 | `/api/items`                                   | GET, POST         | `handle`                    | `repo.listItems` / `createItem` (visible projects; internal writers)     | `createItemSchema`                  |
 | `/api/items/[key]`                             | GET, PATCH        | `handle`                    | `repo.getItem` / `updateItem` (visibility; Accepted rule)                | `itemPatchSchema`                   |
 | `/api/items/[key]/comments`                    | POST              | `handle`                    | `repo.addComment` (item visible; clients shared only)                    | `commentSchema`                     |
@@ -93,12 +99,17 @@ Public by design: the ICS feed (signed per-user, per-project token) and the two 
 | `/api/people/[id]`                             | GET, PATCH        | `handle`                    | `capacityStore().getPerson` / `updatePerson` (403 clients)               | `personPatchSchema`                 |
 | `/api/people/directory`                        | GET               | `handle`                    | `listDirectory` (403 clients; redacted)                                  | —                                   |
 | `/api/portal/inbox`                            | GET               | `handle`                    | `getApprovalInbox` (caller's own)                                        | —                                   |
+| `/api/portal/review`                           | GET               | `handle`                    | `listItems` (caller's org; RLS)                                          | —                                   |
+| `/api/portal/review/[id]`                      | GET               | `handle`                    | `openItem` (caller's org; first open → `client_item.viewed`)             | —                                   |
+| `/api/portal/review/[id]/decide`               | POST              | `handle` + re-auth (accept) | `decideItem` (Sponsor of the org; `client_item_decide` RPC)              | `decisionSchema` (crm)              |
+| `/api/portal/review/[id]/survey`               | POST              | `handle`                    | `answerSurvey` (Sponsor/Member of the org; RPC)                          | `surveySchema`                      |
 | `/api/projects`                                | GET, POST         | `handle`                    | `repo.listProjects` / `createProject` (Admin, Lead)                      | `createProjectSchema`               |
 | `/api/projects/[key]`                          | GET               | `handle`                    | `repo.getProjectBundle` (canSeeProject, redacted)                        | —                                   |
 | `/api/projects/[key]/acceptance-record`        | GET               | `getApiSession`             | `buildAcceptanceRecord` (visible project; audited)                       | —                                   |
 | `/api/projects/[key]/activity`                 | GET               | `handle`                    | `repo.listActivity` (clients shared only)                                | —                                   |
 | `/api/projects/[key]/calendar`                 | GET               | `handle`                    | `calendarPath` (visible project)                                         | —                                   |
 | `/api/projects/[key]/calendar.ics`             | GET               | **feed token**              | `verifyCalendarToken` + that user's visibility; any failure 404          | —                                   |
+| `/api/projects/[key]/commercial`               | GET               | `handle`                    | `getProjectCommercial` (internal, not associates; value: Admin/Lead)     | —                                   |
 | `/api/projects/[key]/dashboard`                | GET, PATCH        | `handle`                    | `getDashboard` (redacted per role) / RAG + budget sharing (Lead, Admin)  | `dashboardPatchSchema`              |
 | `/api/projects/[key]/dashboard.pdf`            | GET               | `getApiSession`             | `getDashboard` (redacted; audited)                                       | —                                   |
 | `/api/projects/[key]/dashboard/audit`          | GET               | `handle`                    | `listDashboardAudit` (Lead, Admin)                                       | —                                   |
@@ -153,9 +164,10 @@ without editing them.
 
 1. **No session** — `lib/security/routes.test.ts` (Vitest, Supabase mode simulated: Supabase is
    configured and `getClaims()` returns no claims). Every exported method of every route must
-   answer 401, or 404 for the four documented non-session routes (`dev/outbox`,
-   `onboarding/reset`, `session/mfa`, the ICS feed), with no seed data in the body and no cookie
-   set.
+   answer 401, or 404 for the documented non-session routes (`dev/outbox`, `dev/mock-crm`,
+   `onboarding/reset`, `session/mfa`, the ICS feed, and `integrations/crm/events`, which is
+   authenticated by the CRM's HMAC signature instead of a session), with no seed data in the body
+   and no cookie set.
 2. **Client of the other org** — `tests/e2e/security.spec.ts` (Playwright, demo mode). As the
    Riverbend sponsor, every method of every route is called with Peachtree object keys (project
    `EHR`, item `EHR-1`, deliverable `dl_ehr_1`, criterion `dlc_ehr_1_1`, gate review `gr_ehr_1`,

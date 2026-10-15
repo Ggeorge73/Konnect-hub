@@ -9,6 +9,8 @@ import { SubmitRequestButton } from '@/features/portal/RequestDialog';
 import { getApprovalInbox } from '@/lib/data/portal';
 import { canActOnApprovals, canSubmitRequest } from '@/lib/domain/portal';
 import { EmptyState } from '@/components/ui/bits';
+import { ForYourReview } from '@/features/portal/ForYourReview';
+import { listItems } from '@/lib/integration/service';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Client portal' };
@@ -16,7 +18,11 @@ export const metadata = { title: 'Client portal' };
 export default async function Portal() {
   const s = await getSession();
   const repo = getRepo();
-  const [projects, inbox] = await Promise.all([repo.listProjects(s), getApprovalInbox(s)]);
+  const [projects, inbox, review] = await Promise.all([
+    repo.listProjects(s),
+    getApprovalInbox(s),
+    listItems(s),
+  ]);
   const bundles = await Promise.all(projects.map((p) => repo.getProjectBundle(s, p.key)));
   const requestable = canSubmitRequest(s.user.role)
     ? projects.map((p) => ({ id: p.id, key: p.key, name: p.name }))
@@ -45,6 +51,7 @@ export default async function Portal() {
           ) : undefined
         }
       />
+      <ForYourReview items={review} projectNames={Object.fromEntries(projects.map((p) => [p.id, p.name]))} />
       <Stack spacing={1.5} component="section" id="projects" aria-labelledby="projects-title">
         <Typography variant="h2" id="projects-title">
           Your projects

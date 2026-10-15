@@ -94,12 +94,13 @@ Record each rotation (date, who, why) in the security log. A leaked service role
 
 ## Scheduled jobs (cron)
 
-Two endpoints must run on a schedule. Both are `POST` and authenticate with the header `x-cron-secret: $CRON_SECRET` (a request without it gets 401 or runs only as the signed-in user).
+Three endpoints must run on a schedule. Both are `POST` and authenticate with the header `x-cron-secret: $CRON_SECRET` (a request without it gets 401 or runs only as the signed-in user).
 
-| Job             | Endpoint                         | Schedule                           | What it does                                                                                                           |
-| --------------- | -------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Daily digest    | `POST /api/notifications/digest` | Once a day, 07:00 America/New_York | Emails each user who chose "daily digest" a summary of their unread notifications; sends once per day.                 |
-| RAID escalation | `POST /api/raid/escalate`        | Hourly                             | Flags issues open > 10 days with no update and notifies the project Lead and Admins (at most once per 24 h per issue). |
+| Job             | Endpoint                          | Schedule                           | What it does                                                                                                                                             |
+| --------------- | --------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daily digest    | `POST /api/notifications/digest`  | Once a day, 07:00 America/New_York | Emails each user who chose "daily digest" a summary of their unread notifications; sends once per day.                                                   |
+| RAID escalation | `POST /api/raid/escalate`         | Hourly                             | Flags issues open > 10 days with no update and notifies the project Lead and Admins (at most once per 24 h per issue).                                   |
+| CRM integration | `POST /api/integrations/crm/cron` | Every 15 minutes                   | Retries failed deliveries to the CRM, sends project health that changed (every project at least daily) and "respond by" reminders (docs/integration.md). |
 
 Vercel Cron only sends `GET` requests, so use one of these:
 
@@ -121,13 +122,20 @@ select cron.schedule('kh-raid-escalation', '7 * * * *', $$
     headers := jsonb_build_object('x-cron-secret',
       (select decrypted_secret from vault.decrypted_secrets where name = 'kh_cron_secret')));
 $$);
+
+select cron.schedule('kh-crm-integration', '*/15 * * * *', $$
+  select net.http_post(
+    url := 'https://hub.konnectortech.com/api/integrations/crm/cron',
+    headers := jsonb_build_object('x-cron-secret',
+      (select decrypted_secret from vault.decrypted_secrets where name = 'kh_cron_secret')));
+$$);
 ```
 
 (`0 11 * * *` UTC is 07:00 in New York during daylight saving time and 06:00 in winter; adjust if needed.) Check runs with `select * from cron.job_run_details order by start_time desc limit 20;`.
 
 **GitHub Actions** (alternative): a workflow with `on: schedule` that runs `curl -fsS -X POST -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" "$APP_URL/api/raid/escalate"`. GitHub may delay scheduled runs by several minutes.
 
-Failures show in the scheduler's log and as 5xx in Vercel logs. Both jobs are idempotent, so a missed run can be triggered by hand with the same request.
+Failures show in the scheduler's log and as 5xx in Vercel logs. All three jobs are idempotent, so a missed run can be triggered by hand with the same request.
 
 ---
 

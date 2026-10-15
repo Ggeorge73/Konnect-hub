@@ -12,6 +12,8 @@ export const NOTIFICATION_KINDS = [
   'sla_breach',
   'risk_escalated',
   'status_report_published',
+  'commercial_review',
+  'commercial_decided',
 ] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
@@ -25,10 +27,16 @@ export const KIND_LABEL: Record<NotificationKind, string> = {
   sla_breach: 'An issue breaches its SLA',
   risk_escalated: 'A risk is escalated',
   status_report_published: 'A status report is published',
+  commercial_review: 'A quote, amendment or survey awaits your review',
+  commercial_decided: 'A client decides on a quote, amendment or survey',
 };
 
 /** Kinds that only ever reach Konnector staff (they carry internal content by nature). */
-export const INTERNAL_ONLY_KINDS: readonly NotificationKind[] = ['sla_breach', 'risk_escalated'];
+export const INTERNAL_ONLY_KINDS: readonly NotificationKind[] = [
+  'sla_breach',
+  'risk_escalated',
+  'commercial_decided',
+];
 
 export const kindsFor = (user: Pick<Profile, 'role'>): NotificationKind[] =>
   NOTIFICATION_KINDS.filter((k) => !isClientRole(user.role) || !INTERNAL_ONLY_KINDS.includes(k));
@@ -56,6 +64,8 @@ export const DEFAULT_CHANNEL: Record<NotificationKind, Channel> = {
   sla_breach: 'email',
   risk_escalated: 'email',
   status_report_published: 'digest',
+  commercial_review: 'email',
+  commercial_decided: 'email',
 };
 
 export interface NotificationPref {

@@ -35,7 +35,7 @@ const anchor = { scrollMarginTop: 120 } as const;
 
 /**
  * Portal project page, organised into anchored sections: Overview (gate tracker + dashboard),
- * Approvals (gate reviews + deliverables), Work (shared items), Status reports, shared Risks and
+ * Approvals (gate reviews + deliverables), For your review (quotes, amendments, offers, surveys), Work (shared items), Status reports, shared Risks and
  * issues, and the Milestones timeline.
  */
 export function PortalProject({
@@ -48,6 +48,7 @@ export function PortalProject({
   canRequest = false,
   overview,
   approvals,
+  review,
 }: {
   bundle: ProjectBundle;
   items: WorkItem[];
@@ -60,6 +61,8 @@ export function PortalProject({
   overview?: React.ReactNode;
   /** Gate reviews and deliverables. */
   approvals?: React.ReactNode;
+  /** "For your review": commercial items published from the CRM. */
+  review?: React.ReactNode;
 }) {
   const path = usePathname();
   const visible = items.filter((i) => i.type !== 'epic');
@@ -95,6 +98,8 @@ export function PortalProject({
         <Box id="approvals" sx={anchor}>
           {approvals}
         </Box>
+
+        {review}
 
         <Paper id="work" sx={{ borderRadius: 4, ...anchor }}>
           <Stack direction="row" alignItems="center" sx={{ p: 2 }}>
