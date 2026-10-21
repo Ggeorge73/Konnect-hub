@@ -50,6 +50,8 @@ const ACTION: Partial<Record<Notification['kind'], string>> = {
   deliverable_awaiting: 'Review deliverable',
   mention: 'Open the conversation',
   assignment: 'Open the item',
+  commercial_review: 'Review it',
+  commercial_decided: 'Open the project',
 };
 
 /** One notification as an immediate email. The button deep-links straight to the action. */

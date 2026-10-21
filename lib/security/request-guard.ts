@@ -18,6 +18,8 @@ export const CSRF_EXEMPT: RegExp[] = [
   /^\/api\/notifications\/digest$/,
   /^\/api\/raid\/escalate$/,
   /^\/api\/projects\/[^/]+\/calendar\.ics$/,
+  // Konnector CRM: HMAC-signed server-to-server calls and the integration cron.
+  /^\/api\/integrations\/crm\/(events|cron)$/,
 ];
 
 export type CsrfVerdict = 'ok' | 'cross-site';

@@ -1918,5 +1918,89 @@ begin
 end $$;
 rollback;
 
+-- ===========================================================================
+-- 25. Konnector CRM integration (0018_crm_integration.sql): commercial items stay inside the
+--     client's organization, handoff details and the event log are internal, and only the
+--     decision functions change an item (Sponsors decide, Sponsors and Members answer surveys).
+-- ===========================================================================
+begin;
+do $$
+declare
+  v_quote text := 'ci_seed_hypercare_v1';
+  v_survey text := 'ci_seed_mobilize_survey_v1';
+begin
+  -- Tenant isolation and who reads what.
+  perform tests.as_user('sponsor');
+  perform tests.eq(tests.count('client_items'), 2, 'Peachtree sponsor sees the 2 Peachtree items');
+  perform tests.eq(tests.count('client_items', 'org_id <> public.current_org_id()'), 0, 'sponsor sees another org''s items');
+  perform tests.eq(tests.count('crm_projects'), 0, 'client reads handoff details');
+  perform tests.eq(tests.count('crm_accounts'), 0, 'client reads the CRM account mapping');
+  perform tests.eq(tests.count('integration_events'), 0, 'client reads the event log');
+  perform tests.as_user('rsponsor');
+  perform tests.eq(tests.count('client_items'), 1, 'Riverbend sponsor sees only the Riverbend survey');
+  perform tests.eq(tests.count('client_items', format('id = %L', v_quote)), 0, 'Riverbend sees the Peachtree quote');
+  perform tests.as_user('team');
+  perform tests.ok(tests.count('client_items') > 0, 'team members read items on their projects');
+  perform tests.eq(tests.count('crm_projects'), 0, 'team members read contract values');
+  perform tests.as_user('assoc');
+  perform tests.eq(tests.count('client_items'), 0, 'associates read commercial items');
+  perform tests.eq(tests.count('crm_projects'), 0, 'associates read handoff details');
+  perform tests.as_user('lead');
+  perform tests.eq(tests.count('crm_projects'), 2, 'the lead reads the handoff details of both projects');
+  perform tests.eq(tests.count('integration_events'), 0, 'a lead reads the event log');
+  perform tests.as_user('admin');
+  perform tests.eq(tests.count('crm_accounts'), 2, 'admin reads the account mapping');
+
+  -- Nobody writes items, links or events directly: the server (service role) and the functions do.
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('update public.client_items set status = ''accepted'' where id = %L', v_quote),
+                       'client updates an item directly');
+  perform tests.as_user('admin');
+  perform tests.throws($q$insert into public.integration_events (direction, event, idempotency_key, status)
+                          values ('inbound', 'x', 'k', 'processed')$q$, 'admin writes the event log directly');
+  perform tests.throws(format('delete from public.client_items where id = %L', v_quote), 'admin deletes an item');
+
+  -- Decisions: Sponsors only, own org only, open items only, with the required fields.
+  perform tests.as_user('lead');
+  perform tests.throws(format('select public.client_item_decide(%L, ''declined'', null, null, null, null)', v_quote),
+                       'Konnector user decides');
+  perform tests.as_user('rsponsor');
+  perform tests.throws(format('select public.client_item_decide(%L, ''declined'', null, null, null, null)', v_quote),
+                       'another org decides');
+  perform tests.as_user('cmember');
+  perform tests.throws(format('select public.client_item_decide(%L, ''declined'', null, null, null, null)', v_quote),
+                       'member decides a quote');
+  perform tests.as_user('sponsor');
+  perform tests.throws(format('select public.client_item_decide(%L, ''accepted'', null, null, null, null)', v_quote),
+                       'accept without name and title');
+  perform tests.throws(format('select public.client_item_decide(%L, ''changes_requested'', '' '', null, null, null)', v_quote),
+                       'request changes without a note');
+  perform tests.ok(public.client_item_record_view(v_quote), 'first open is recorded');
+  perform tests.ok(not public.client_item_record_view(v_quote), 'second open is not first');
+  perform public.client_item_decide(v_quote, 'accepted', null, 'Grace Whitfield', 'COO', '203.0.113.9');
+  perform tests.eq(tests.count('client_items', format('id = %L and status = ''accepted'' and decided_by_title = ''COO''
+                                                       and decided_ip = ''203.0.113.9'' and first_viewed_at is not null', v_quote)),
+                   1, 'acceptance recorded with name, title and IP');
+  perform tests.throws(format('select public.client_item_decide(%L, ''declined'', null, null, null, null)', v_quote),
+                       'decide twice');
+  perform tests.as_user('admin');
+  perform tests.eq(tests.count('audit_log', format('action = ''client_item.accepted'' and entity_id = %L', v_quote)), 1,
+                   'acceptance audited');
+
+  -- Surveys: Sponsors and Members answer, viewers read only.
+  perform tests.as_user('cviewer');
+  perform tests.throws(format('select public.client_item_answer_survey(%L, 9, null)', v_survey), 'viewer answers a survey');
+  perform tests.as_user('cmember');
+  perform tests.throws(format('select public.client_item_answer_survey(%L, 11, null)', v_survey), 'score above 10');
+  perform public.client_item_answer_survey(v_survey, 9, 'Great kickoff');
+  perform tests.eq(tests.count('client_items', format('id = %L and survey_score = 9', v_survey)), 1, 'survey answer stored');
+
+  -- commercial_decided notifications never reach a client.
+  perform tests.as_owner();
+  perform tests.throws(format('insert into public.notifications (user_id, project_id, kind, title, visibility) values (%L, %L, ''commercial_decided'', ''x'', ''shared'')',
+                              tests.uid('sponsor'), tests.ehr()), 'commercial_decided to a client');
+end $$;
+rollback;
+
 select format('PASS: %s assertions', nextval('tests.assertions') - 1) as result;
 drop schema tests cascade;

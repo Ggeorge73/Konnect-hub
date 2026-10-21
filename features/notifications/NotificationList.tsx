@@ -8,6 +8,7 @@ import Inventory2Outlined from '@mui/icons-material/Inventory2Outlined';
 import TimerOffOutlined from '@mui/icons-material/TimerOffOutlined';
 import ReportProblemOutlined from '@mui/icons-material/ReportProblemOutlined';
 import DescriptionOutlined from '@mui/icons-material/DescriptionOutlined';
+import RequestQuoteOutlined from '@mui/icons-material/RequestQuoteOutlined';
 import { KIND_LABEL, type Notification, type NotificationKind } from '@/lib/domain/notifications';
 
 const ICON: Record<NotificationKind, typeof AlternateEmail> = {
@@ -20,6 +21,8 @@ const ICON: Record<NotificationKind, typeof AlternateEmail> = {
   sla_breach: TimerOffOutlined,
   risk_escalated: ReportProblemOutlined,
   status_report_published: DescriptionOutlined,
+  commercial_review: RequestQuoteOutlined,
+  commercial_decided: RequestQuoteOutlined,
 };
 
 /** Short relative time ("5 min ago"), falling back to the date for anything older than a week. */

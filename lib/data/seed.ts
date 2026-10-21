@@ -30,6 +30,7 @@ import { seedPortal, type WorkspaceState } from './seed-portal';
 import { seedLedger, type LedgerState } from './seed-ledger';
 import { seedAi, type AiState } from './seed-ai';
 import { seedAdmin, type AdminState } from './seed-admin';
+import { seedCrm, type CrmState } from './seed-crm';
 
 export interface Db extends PulseDb {
   orgs: Organization[];
@@ -56,6 +57,7 @@ export interface Db extends PulseDb {
   ledger: LedgerState;
   ai: AiState;
   admin: AdminState;
+  crm: CrmState;
 }
 
 export const DEMO_PROJECT_KEY = 'EHR';
@@ -667,5 +669,6 @@ export function buildSeed(): Db {
     ...seedLedger(),
     ...seedAi(),
     ...seedAdmin(),
+    ...seedCrm(),
   };
 }

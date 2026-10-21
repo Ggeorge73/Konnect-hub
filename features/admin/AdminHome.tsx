@@ -27,6 +27,7 @@ import ContentCopyOutlined from '@mui/icons-material/ContentCopyOutlined';
 import ViewWeekOutlined from '@mui/icons-material/ViewWeekOutlined';
 import TuneOutlined from '@mui/icons-material/TuneOutlined';
 import HistoryOutlined from '@mui/icons-material/HistoryOutlined';
+import SyncAltOutlined from '@mui/icons-material/SyncAltOutlined';
 import { api, qk } from '@/lib/client/api';
 import { Mono } from '@/components/ui/bits';
 import { ROLE_LABEL } from '@/lib/domain/permissions';
@@ -85,6 +86,13 @@ const CONSOLE: {
     body: 'Who changed what, when and from where. Append-only.',
     href: '/admin/audit',
     cta: 'Open the audit log',
+  },
+  {
+    icon: SyncAltOutlined,
+    title: 'Integrations',
+    body: 'Konnector CRM handoffs, commercial items and project health: recent events, failures and retries.',
+    href: '/admin/integrations',
+    cta: 'Open integrations',
   },
 ];
 
